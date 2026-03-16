@@ -22,6 +22,7 @@
 #include "barrier/key_types.h"
 #include "base/Event.h"
 #include "base/Stopwatch.h"
+#include "net/UDPSocket.h"
 
 class Client;
 class ClientInfo;
@@ -106,6 +107,8 @@ private:
     void                infoAcknowledgment();
     void                fileChunkReceived();
     void                dragInfoReceived();
+    void                udpPort();
+    void                pollUdp();
     void                handleClipboardSendingEvent(const Event&, void*);
 
 private:
@@ -130,4 +133,8 @@ private:
 
     MessageParser        m_parser;
     IEventQueue*        m_events;
+
+    // UDP mouse channel
+    UDPSocket*            m_udpSocket;
+    UInt32                m_udpLastSeqNum;
 };

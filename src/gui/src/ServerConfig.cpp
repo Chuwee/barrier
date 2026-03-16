@@ -52,6 +52,7 @@ ServerConfig::ServerConfig(QSettings* settings, int numColumns, int numRows ,
     m_IgnoreAutoConfigClient(false),
     m_EnableDragAndDrop(false),
     m_ClipboardSharing(true),
+    m_UdpMouse(false),
     m_pMainWindow(mainWindow)
 {
     Q_ASSERT(m_pSettings);
@@ -119,6 +120,7 @@ void ServerConfig::saveSettings()
     settings().setValue("ignoreAutoConfigClient", ignoreAutoConfigClient());
     settings().setValue("enableDragAndDrop", enableDragAndDrop());
     settings().setValue("clipboardSharing", clipboardSharing());
+    settings().setValue("udpMouse", udpMouse());
 
     writeSettings<bool>(settings(), switchCorners(), "switchCorner");
 
@@ -215,6 +217,7 @@ void ServerConfig::loadSettings()
     setIgnoreAutoConfigClient(settings().value("ignoreAutoConfigClient").toBool());
     setEnableDragAndDrop(settings().value("enableDragAndDrop", true).toBool());
     setClipboardSharing(settings().value("clipboardSharing", true).toBool());
+    setUdpMouse(settings().value("udpMouse", false).toBool());
 
     readSettings<bool>(settings(), switchCorners(), "switchCorner", false,
                        static_cast<int>(SwitchCorner::Count));
@@ -426,6 +429,7 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
     outStream << "\t" << "screenSaverSync = " << (config.screenSaverSync() ? "true" : "false") << endl;
     outStream << "\t" << "win32KeepForeground = " << (config.win32KeepForeground() ? "true" : "false") << endl;
     outStream << "\t" << "clipboardSharing = " << (config.clipboardSharing() ? "true" : "false") << endl;
+    outStream << "\t" << "udpMouse = " << (config.udpMouse() ? "true" : "false") << endl;
 
     if (config.hasSwitchDelay())
         outStream << "\t" << "switchDelay = " << config.switchDelay() << endl;

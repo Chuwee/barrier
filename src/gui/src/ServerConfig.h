@@ -67,6 +67,7 @@ class ServerConfig : public BaseConfig
         bool ignoreAutoConfigClient() const { return m_IgnoreAutoConfigClient; }
         bool enableDragAndDrop() const { return m_EnableDragAndDrop; }
         bool clipboardSharing() const { return m_ClipboardSharing; }
+        bool udpMouse() const { return m_UdpMouse; }
 
         const QMap<QString, LinkConfig>& linkConfigs() const { return m_LinkConfigs; }
         LinkConfig linkConfig(const QString& screenName, const QString& direction) const;
@@ -121,6 +122,7 @@ class ServerConfig : public BaseConfig
         void setIgnoreAutoConfigClient(bool on) { m_IgnoreAutoConfigClient = on; }
         void setEnableDragAndDrop(bool on) { m_EnableDragAndDrop = on; }
         void setClipboardSharing(bool on) { m_ClipboardSharing = on; }
+        void setUdpMouse(bool on) { m_UdpMouse = on; }
         QList<bool>& switchCorners() { return m_SwitchCorners; }
         std::vector<Hotkey>& hotkeys() { return m_Hotkeys; }
 
@@ -154,6 +156,7 @@ class ServerConfig : public BaseConfig
         bool m_IgnoreAutoConfigClient;
         bool m_EnableDragAndDrop;
         bool m_ClipboardSharing;
+        bool m_UdpMouse;
         MainWindow* m_pMainWindow;
         QMap<QString, LinkConfig> m_LinkConfigs;
         QList<ExplicitLink> m_ExplicitLinks;

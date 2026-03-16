@@ -38,6 +38,9 @@ static const SInt16        kProtocolMinorVersion = 7;
 // default contact port number
 static const UInt16        kDefaultPort = 24800;
 
+// default UDP port for mouse channel
+static const UInt16        kDefaultUdpPort = 24801;
+
 // maximum total length for greeting returned by client
 static const UInt32        kMaxHelloLength = 1024;
 
@@ -314,6 +317,11 @@ extern const char*        kMsgEBad;
 // $1 = number of monitors, then repeated (x, y, w, h) for each monitor.
 // sent by client after DINF if server version >= 1.7.
 extern const char*        kMsgDMonitorInfo;
+
+// UDP port announcement:  primary -> secondary
+// $1 = UDP port number for the mouse channel.
+// sent by server to tell client the UDP port to use.
+extern const char*        kMsgDUdpPort;
 
 
 //

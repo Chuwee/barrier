@@ -920,6 +920,9 @@ Config::readSectionOptions(ConfigReadContext& s)
 		else if (name == "clipboardSharing") {
 			addOption("", kOptionClipboardSharing, s.parseBoolean(value));
 		}
+		else if (name == "udpMouse") {
+			addOption("", kOptionUdpMouseChannel, s.parseBoolean(value));
+		}
 
 		else {
 			handled = false;
@@ -1584,6 +1587,9 @@ Config::getOptionName(OptionID id)
 	if (id == kOptionClipboardSharing) {
 		return "clipboardSharing";
 	}
+	if (id == kOptionUdpMouseChannel) {
+		return "udpMouse";
+	}
 	return NULL;
 }
 
@@ -1600,7 +1606,8 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
 		id == kOptionRelativeMouseMoves ||
 		id == kOptionWin32KeepForeground ||
 		id == kOptionScreenPreserveFocus ||
-		id == kOptionClipboardSharing) {
+		id == kOptionClipboardSharing ||
+		id == kOptionUdpMouseChannel) {
 		return (value != 0) ? "true" : "false";
 	}
 	if (id == kOptionModifierMapForShift ||

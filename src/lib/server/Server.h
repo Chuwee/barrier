@@ -32,6 +32,9 @@
 #include "common/stdmap.h"
 #include "common/stdset.h"
 #include "common/stdvector.h"
+#include "net/UDPSocket.h"
+
+#include <cstring>
 
 class BaseClientProxy;
 class EventQueueTimer;
@@ -499,4 +502,14 @@ private:
 
     ClientListener*        m_clientListener;
     ServerArgs            m_args;
+
+    // UDP mouse channel
+    UDPSocket*            m_udpSocket;
+    bool                m_udpMouseEnabled;
+    UInt32                m_udpSeqNum;
+    Stopwatch            m_udpSyncTimer;
+    typedef std::map<std::string, struct sockaddr_in> UdpClientMap;
+    UdpClientMap        m_udpClients;
+
+    void                sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b);
 };

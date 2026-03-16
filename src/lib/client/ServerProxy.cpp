@@ -34,6 +34,8 @@
 #include "base/XBase.h"
 
 #include <memory>
+#include <cstring>
+#include <vector>
 
 //
 // ServerProxy
@@ -53,7 +55,9 @@ ServerProxy::ServerProxy(Client* client, barrier::IStream* stream, IEventQueue* 
     m_keepAliveAlarm(0.0),
     m_keepAliveAlarmTimer(NULL),
     m_parser(&ServerProxy::parseHandshakeMessage),
-    m_events(events)
+    m_events(events),
+    m_udpSocket(NULL),
+    m_udpLastSeqNum(0)
 {
     assert(m_client != NULL);
     assert(m_stream != NULL);
@@ -83,6 +87,9 @@ ServerProxy::~ServerProxy()
     m_events->removeHandler(m_events->forIStream().inputReady(),
                             m_stream->getEventTarget());
     m_events->removeHandler(m_events->forClipboard().clipboardSending(), this);
+
+    delete m_udpSocket;
+    m_udpSocket = NULL;
 }
 
 void
@@ -153,6 +160,9 @@ ServerProxy::handleData(const Event&, void*)
     }
 
     flushCompressedMouse();
+
+    // also poll UDP for mouse datagrams
+    pollUdp();
 }
 
 ServerProxy::EResult
@@ -314,6 +324,10 @@ ServerProxy::parseMessage(const UInt8* code)
     }
     else if (memcmp(code, kMsgDDragInfo, 4) == 0) {
         dragInfoReceived();
+    }
+
+    else if (memcmp(code, kMsgDUdpPort, 4) == 0) {
+        udpPort();
     }
 
     else if (memcmp(code, kMsgCClose, 4) == 0) {
@@ -927,4 +941,72 @@ ServerProxy::sendDragInfo(UInt32 fileCount, const char* info, size_t size)
 {
     std::string data(info, size);
     ProtocolUtil::writef(m_stream, kMsgDDragInfo, fileCount, &data);
+}
+
+void
+ServerProxy::udpPort()
+{
+	// parse the UDP port number from the server
+	SInt16 port;
+	ProtocolUtil::readf(m_stream, kMsgDUdpPort + 4, &port);
+	LOG((CLOG_DEBUG "server announced UDP mouse port %d", port));
+
+	// create UDP socket and set target to server's address
+	delete m_udpSocket;
+	m_udpSocket = new UDPSocket();
+	m_udpLastSeqNum = 0;
+
+	// get the server's IP from the TCP stream's peer address
+	// (the stream is a TCPSocket, which has getHostname)
+	// We need the server's hostname - use the client's server address
+	std::string serverAddr = m_client->getServerAddress().getHostname();
+	if (serverAddr.empty() || !m_udpSocket->setTarget(serverAddr.c_str(), (UInt16)port)) {
+		LOG((CLOG_WARN "failed to set UDP target, UDP mouse disabled"));
+		delete m_udpSocket;
+		m_udpSocket = NULL;
+		return;
+	}
+
+	// send hello datagram for NAT punch-through and address registration
+	// format: [type=0xFF][pad:1][seq:4][clientName...]
+	std::string name = m_client->getName();
+	size_t dgSize = 6 + name.size();
+	std::vector<UInt8> hello(dgSize, 0);
+	hello[0] = 0xFF;
+	std::memcpy(&hello[6], name.c_str(), name.size());
+	m_udpSocket->send(&hello[0], (int)hello.size());
+
+	LOG((CLOG_NOTE "UDP mouse channel active to %s:%d",
+		 serverAddr.c_str(), port));
+}
+
+void
+ServerProxy::pollUdp()
+{
+	if (m_udpSocket == NULL)
+		return;
+
+	UInt8 buf[20];
+	int n;
+	while ((n = m_udpSocket->recv(buf, sizeof(buf))) == 20) {
+		UInt8 type = buf[0];
+		UInt32 seq = ((UInt32)buf[2] << 24) | ((UInt32)buf[3] << 16) |
+					 ((UInt32)buf[4] << 8)  | (UInt32)buf[5];
+		SInt32 a = ((SInt32)buf[6] << 24) | ((SInt32)buf[7] << 16) |
+				   ((SInt32)buf[8] << 8)  | (SInt32)buf[9];
+		SInt32 b = ((SInt32)buf[10] << 24) | ((SInt32)buf[11] << 16) |
+				   ((SInt32)buf[12] << 8)  | (SInt32)buf[13];
+
+		if (type == 0x01) {
+			// relative delta — always apply (commutative, order doesn't matter)
+			m_client->mouseRelativeMove(a, b);
+		}
+		else if (type == 0x02) {
+			// absolute sync — discard if stale
+			if (seq > m_udpLastSeqNum) {
+				m_udpLastSeqNum = seq;
+				m_client->mouseMove(a, b);
+			}
+		}
+	}
 }

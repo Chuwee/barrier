@@ -43,6 +43,9 @@
 #include "base/Log.h"
 #include "base/TMethodEventJob.h"
 
+#include "net/UDPSocket.h"
+#include "barrier/ProtocolUtil.h"
+
 #include <cstring>
 #include <cstdlib>
 #include <sstream>
@@ -92,7 +95,10 @@ Server::Server(
 	m_enableClipboard(true),
 	m_sendDragInfoThread(NULL),
 	m_waitDragInfoThread(true),
-	m_args(args)
+	m_args(args),
+	m_udpSocket(NULL),
+	m_udpMouseEnabled(false),
+	m_udpSeqNum(0)
 {
 	// must have a primary client and it must have a canonical name
 	assert(m_primaryClient != NULL);
@@ -249,6 +255,10 @@ Server::~Server()
 	m_events->removeHandler(Event::kTimer, this);
 	stopSwitch();
 
+	// clean up UDP socket
+	delete m_udpSocket;
+	m_udpSocket = NULL;
+
 	// force immediate disconnection of secondary clients
 	disconnect();
 	for (OldClients::iterator index = m_oldClients.begin();
@@ -339,6 +349,17 @@ Server::adoptClient(BaseClientProxy* client)
 
 	// send configuration options to client
 	sendOptions(client);
+
+	// if UDP mouse channel is enabled, tell the client the UDP port
+	if (m_udpMouseEnabled && m_udpSocket != NULL) {
+		barrier::IStream* stream = client->getStream();
+		if (stream != NULL) {
+			LOG((CLOG_DEBUG "sending UDP port %d to client \"%s\"",
+				 kDefaultUdpPort, getName(client).c_str()));
+			ProtocolUtil::writef(stream, kMsgDUdpPort,
+				static_cast<SInt16>(kDefaultUdpPort));
+		}
+	}
 
 	// activate screen saver on new client if active on the primary screen
 	if (m_activeSaver != NULL) {
@@ -1425,6 +1446,32 @@ Server::processOptions()
 				LOG((CLOG_NOTE "clipboard sharing is disabled"));
 			}
 		}
+		else if (id == kOptionUdpMouseChannel) {
+			bool wantUdp = (value != 0);
+			if (wantUdp && !m_udpMouseEnabled) {
+				// create and bind the UDP socket
+				m_udpSocket = new UDPSocket();
+				if (m_udpSocket->bind(kDefaultUdpPort)) {
+					m_udpMouseEnabled = true;
+					m_udpSeqNum = 0;
+					m_udpSyncTimer.reset();
+					LOG((CLOG_NOTE "UDP mouse channel enabled on port %d", kDefaultUdpPort));
+				}
+				else {
+					LOG((CLOG_WARN "failed to bind UDP socket, UDP mouse channel disabled"));
+					delete m_udpSocket;
+					m_udpSocket = NULL;
+					m_udpMouseEnabled = false;
+				}
+			}
+			else if (!wantUdp && m_udpMouseEnabled) {
+				LOG((CLOG_NOTE "UDP mouse channel disabled"));
+				delete m_udpSocket;
+				m_udpSocket = NULL;
+				m_udpMouseEnabled = false;
+				m_udpClients.clear();
+			}
+		}
 	}
 	if (m_relativeMoves && !newRelativeMoves) {
 		stopRelativeMoves();
@@ -2165,7 +2212,13 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 	// have no idea where it really is.
 	if (m_relativeMoves && isLockedToScreenServer()) {
 		LOG((CLOG_DEBUG2 "relative move on %s by %d,%d", getName(m_active).c_str(), dx, dy));
-		m_active->mouseRelativeMove(dx, dy);
+		if (m_udpMouseEnabled && m_udpSocket != NULL &&
+			m_udpClients.count(getName(m_active)) > 0) {
+			sendUdpDatagram(0x01, dx, dy);
+		}
+		else {
+			m_active->mouseRelativeMove(dx, dy);
+		}
 		return;
 	}
 
@@ -2309,7 +2362,18 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 		// warp cursor if it moved.
 		if (m_x != xOld || m_y != yOld) {
 			LOG((CLOG_DEBUG2 "move on %s to %d,%d", getName(m_active).c_str(), m_x, m_y));
-			m_active->mouseMove(m_x, m_y);
+			if (m_udpMouseEnabled && m_active != m_primaryClient) {
+				// send relative delta via UDP (low latency)
+				sendUdpDatagram(0x01, dx, dy);
+				// periodically send absolute sync to correct drift
+				if (m_udpSyncTimer.getTime() >= 0.1) {
+					sendUdpDatagram(0x02, m_x, m_y);
+					m_udpSyncTimer.reset();
+				}
+			}
+			else {
+				m_active->mouseMove(m_x, m_y);
+			}
 		}
 	}
 }
@@ -2547,6 +2611,60 @@ Server::forceLeaveClient(BaseClientProxy* client)
 
 	// tell primary client about the active sides
 	m_primaryClient->reconfigure(getActivePrimarySides());
+}
+
+
+//
+// Server UDP mouse channel
+//
+
+void
+Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
+{
+	if (!m_udpSocket || !m_udpMouseEnabled)
+		return;
+
+	// drain any incoming hello datagrams to register client addresses
+	{
+		UInt8 hbuf[256];
+		struct sockaddr_in from;
+		int n;
+		while ((n = m_udpSocket->recv(hbuf, sizeof(hbuf), &from)) > 0) {
+			// hello datagram: type=0xFF, contains client name in bytes 6..
+			if (n >= 7 && hbuf[0] == 0xFF) {
+				std::string clientName(reinterpret_cast<char*>(hbuf + 6),
+									n - 6);
+				m_udpClients[clientName] = from;
+				LOG((CLOG_DEBUG "registered UDP address for client \"%s\"",
+					 clientName.c_str()));
+			}
+		}
+	}
+
+	std::string activeName = getName(m_active);
+	UdpClientMap::const_iterator it = m_udpClients.find(activeName);
+	if (it == m_udpClients.end())
+		return;
+
+	// 20-byte datagram: [type:1][pad:1][seq:4][a:4][b:4][ts:4][pad:2]
+	UInt8 buf[20];
+	std::memset(buf, 0, sizeof(buf));
+	buf[0] = type;
+	UInt32 seq = ++m_udpSeqNum;
+	buf[2] = static_cast<UInt8>(seq >> 24);
+	buf[3] = static_cast<UInt8>(seq >> 16);
+	buf[4] = static_cast<UInt8>(seq >> 8);
+	buf[5] = static_cast<UInt8>(seq);
+	buf[6]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 24);
+	buf[7]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 16);
+	buf[8]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 8);
+	buf[9]  = static_cast<UInt8>(static_cast<UInt32>(a));
+	buf[10] = static_cast<UInt8>(static_cast<UInt32>(b) >> 24);
+	buf[11] = static_cast<UInt8>(static_cast<UInt32>(b) >> 16);
+	buf[12] = static_cast<UInt8>(static_cast<UInt32>(b) >> 8);
+	buf[13] = static_cast<UInt8>(static_cast<UInt32>(b));
+
+	m_udpSocket->sendTo(buf, sizeof(buf), it->second);
 }
 
 

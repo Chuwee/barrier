@@ -26,6 +26,7 @@
 #include "ui_ServerConfigDialogBase.h"
 
 #include <QDialog>
+#include <QCheckBox>
 
 class DisplayLayoutWidget;
 
@@ -63,6 +64,7 @@ class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
         ScreenSetupModel m_ScreenSetupModel;
         DisplayLayoutWidget* m_pDisplayLayout;
         QString m_Message;
+        QCheckBox* m_pCheckBoxUdpMouse;
 };
 
 #endif
