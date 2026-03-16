@@ -712,20 +712,9 @@ ServerProxy::mouseMove()
     // note if we should ignore the move
     ignore = m_ignoreMouse;
 
-    // compress mouse motion events if more input follows
-    if (!ignore && !m_compressMouse && m_stream->isReady()) {
-        m_compressMouse = true;
-    }
-
-    // if compressing then ignore the motion but record it
-    if (m_compressMouse) {
-        m_compressMouseRelative = false;
-        ignore    = true;
-        m_xMouse  = x;
-        m_yMouse  = y;
-        m_dxMouse = 0;
-        m_dyMouse = 0;
-    }
+    // NOTE: mouse compression disabled for low-latency cursor tracking.
+    // Every mouse position is applied immediately rather than buffering
+    // and only applying the last one when the stream drains.
     LOG((CLOG_DEBUG2 "recv mouse move %d,%d", x, y));
 
     // forward
@@ -745,17 +734,7 @@ ServerProxy::mouseRelativeMove()
     // note if we should ignore the move
     ignore = m_ignoreMouse;
 
-    // compress mouse motion events if more input follows
-    if (!ignore && !m_compressMouseRelative && m_stream->isReady()) {
-        m_compressMouseRelative = true;
-    }
-
-    // if compressing then ignore the motion but record it
-    if (m_compressMouseRelative) {
-        ignore     = true;
-        m_dxMouse += dx;
-        m_dyMouse += dy;
-    }
+    // NOTE: mouse compression disabled for low-latency cursor tracking.
     LOG((CLOG_DEBUG2 "recv mouse relative move %d,%d", dx, dy));
 
     // forward
