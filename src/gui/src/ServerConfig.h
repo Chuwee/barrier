@@ -70,6 +70,7 @@ class ServerConfig : public BaseConfig
         LinkConfig linkConfig(const QString& screenName, const QString& direction) const;
         void setLinkConfig(const QString& screenName, const QString& direction,
                            const LinkConfig& config);
+        void clearLinkConfigs() { m_LinkConfigs.clear(); }
 
         void saveSettings();
         void loadSettings();

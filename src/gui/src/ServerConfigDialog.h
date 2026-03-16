@@ -27,6 +27,8 @@
 
 #include <QDialog>
 
+class DisplayLayoutWidget;
+
 class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
 {
     Q_OBJECT
@@ -59,6 +61,7 @@ class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
         ServerConfig& m_OrigServerConfig;
         ServerConfig m_ServerConfig;
         ScreenSetupModel m_ScreenSetupModel;
+        DisplayLayoutWidget* m_pDisplayLayout;
         QString m_Message;
 };
 

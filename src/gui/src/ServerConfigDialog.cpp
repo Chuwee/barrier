@@ -20,6 +20,7 @@
 #include "ServerConfig.h"
 #include "HotkeyDialog.h"
 #include "ActionDialog.h"
+#include "DisplayLayoutWidget.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -31,6 +32,7 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     m_OrigServerConfig(config),
     m_ServerConfig(config),
     m_ScreenSetupModel(serverConfig().screens(), serverConfig().numColumns(), serverConfig().numRows()),
+    m_pDisplayLayout(nullptr),
     m_Message("")
 {
     setupUi(this);
@@ -64,11 +66,30 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
         m_pListHotkeys->addItem(hotkey.text());
     }
 
+    // keep the grid model alive for compatibility but hide the old tab
     m_pScreenSetupView->setModel(&m_ScreenSetupModel);
     m_pScreenSetupView->setServerConfig(&m_ServerConfig);
 
     if (serverConfig().numScreens() == 0)
         model().screen(serverConfig().numColumns() / 2, serverConfig().numRows() / 2) = Screen(defaultScreenName);
+
+    // replace the grid tab with the visual display layout
+    m_pDisplayLayout = new DisplayLayoutWidget();
+    m_pDisplayLayout->setServerName(defaultScreenName);
+
+    // collect remote screen names from config
+    QStringList remoteNames;
+    for (const Screen& s : serverConfig().screens()) {
+        if (!s.isNull() && s.name() != defaultScreenName)
+            remoteNames << s.name();
+    }
+    m_pDisplayLayout->setRemoteScreens(remoteNames);
+
+    // replace the "Screens and links" tab content
+    int screensTabIdx = m_pTabWidget->indexOf(m_pTabScreens);
+    m_pTabWidget->removeTab(screensTabIdx);
+    m_pTabWidget->insertTab(screensTabIdx, m_pDisplayLayout, tr("Display Arrangement"));
+    m_pTabWidget->setCurrentIndex(screensTabIdx);
 }
 
 void ServerConfigDialog::showEvent(QShowEvent* event)
@@ -109,6 +130,11 @@ void ServerConfigDialog::accept()
     serverConfig().setIgnoreAutoConfigClient(m_pCheckBoxIgnoreAutoConfigClient->isChecked());
     serverConfig().setEnableDragAndDrop(m_pCheckBoxEnableDragAndDrop->isChecked());
     serverConfig().setClipboardSharing(m_pCheckBoxEnableClipboard->isChecked());
+
+    // apply visual layout links to config
+    if (m_pDisplayLayout) {
+        m_pDisplayLayout->applyToServerConfig(&m_ServerConfig);
+    }
 
     // now that the dialog has been accepted, copy the new server config to the original one,
     // which is a reference to the one in MainWindow.
