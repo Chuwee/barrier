@@ -33,6 +33,7 @@
 #include "common/stdset.h"
 #include "common/stdvector.h"
 #include "net/UDPSocket.h"
+#include "net/P2PTransport.h"
 
 #include <cstring>
 
@@ -513,4 +514,7 @@ private:
     UdpClientMap        m_udpClients;
 
     void                sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b);
+
+    // P2P (AWDL) transport — preferred over regular UDP when active
+    P2PTransport*        m_p2pTransport;
 };

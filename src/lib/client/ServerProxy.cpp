@@ -19,6 +19,7 @@
 #include "client/ServerProxy.h"
 
 #include "client/Client.h"
+#include "platform/AWDLTransport.h"
 #include "barrier/FileChunk.h"
 #include "barrier/ClipboardChunk.h"
 #include "barrier/StreamChunker.h"
@@ -58,7 +59,8 @@ ServerProxy::ServerProxy(Client* client, barrier::IStream* stream, IEventQueue* 
     m_events(events),
     m_udpSocket(NULL),
     m_udpLastSeqNum(0),
-    m_udpPollTimer(NULL)
+    m_udpPollTimer(NULL),
+    m_p2pTransport(NULL)
 {
     assert(m_client != NULL);
     assert(m_stream != NULL);
@@ -96,6 +98,9 @@ ServerProxy::~ServerProxy()
     }
     delete m_udpSocket;
     m_udpSocket = NULL;
+
+    delete m_p2pTransport;
+    m_p2pTransport = NULL;
 }
 
 void
@@ -996,39 +1001,69 @@ ServerProxy::udpPort()
 
 	LOG((CLOG_NOTE "UDP mouse channel active to %s:%d",
 		 serverAddr.c_str(), port));
+
+	// also try to start P2P transport (AWDL on macOS)
+	delete m_p2pTransport;
+	m_p2pTransport = new AWDLTransport();
+	std::string clientName = m_client->getName();
+	if (m_p2pTransport->start(clientName,
+			kDefaultP2pPort)) {
+		LOG((CLOG_NOTE "P2P (AWDL) transport started"));
+	}
+	else {
+		LOG((CLOG_NOTE "P2P transport unavailable, using regular UDP"));
+		delete m_p2pTransport;
+		m_p2pTransport = NULL;
+	}
+}
+
+void
+ServerProxy::processMouseDatagram(const UInt8* buf)
+{
+	UInt8 type = buf[0];
+	UInt32 seq = ((UInt32)buf[2] << 24) | ((UInt32)buf[3] << 16) |
+				 ((UInt32)buf[4] << 8)  | (UInt32)buf[5];
+	SInt32 a = ((SInt32)buf[6] << 24) | ((SInt32)buf[7] << 16) |
+			   ((SInt32)buf[8] << 8)  | (SInt32)buf[9];
+	SInt32 b = ((SInt32)buf[10] << 24) | ((SInt32)buf[11] << 16) |
+			   ((SInt32)buf[12] << 8)  | (SInt32)buf[13];
+
+	// discard duplicate packets (seq already seen)
+	if (seq <= m_udpLastSeqNum) {
+		return;
+	}
+	m_udpLastSeqNum = seq;
+
+	if (type == 0x01) {
+		m_client->mouseRelativeMove(a, b);
+	}
+	else if (type == 0x02) {
+		m_client->mouseMove(a, b);
+	}
 }
 
 void
 ServerProxy::pollUdp()
 {
+	UInt8 buf[20];
+	int n;
+
+	// poll P2P socket first (lowest latency)
+	if (m_p2pTransport && m_p2pTransport->isActive()) {
+		UDPSocket* p2pSock = m_p2pTransport->getSocket();
+		if (p2pSock) {
+			while ((n = p2pSock->recvIPv6(buf, sizeof(buf))) == 20) {
+				processMouseDatagram(buf);
+			}
+		}
+	}
+
+	// also poll regular UDP socket
 	if (m_udpSocket == NULL)
 		return;
 
-	UInt8 buf[20];
-	int n;
 	while ((n = m_udpSocket->recv(buf, sizeof(buf))) == 20) {
-		UInt8 type = buf[0];
-		UInt32 seq = ((UInt32)buf[2] << 24) | ((UInt32)buf[3] << 16) |
-					 ((UInt32)buf[4] << 8)  | (UInt32)buf[5];
-		SInt32 a = ((SInt32)buf[6] << 24) | ((SInt32)buf[7] << 16) |
-				   ((SInt32)buf[8] << 8)  | (SInt32)buf[9];
-		SInt32 b = ((SInt32)buf[10] << 24) | ((SInt32)buf[11] << 16) |
-				   ((SInt32)buf[12] << 8)  | (SInt32)buf[13];
-
-		// discard duplicate packets (seq already seen)
-		if (seq <= m_udpLastSeqNum) {
-			continue;
-		}
-		m_udpLastSeqNum = seq;
-
-		if (type == 0x01) {
-			// relative delta — order doesn't matter (commutative)
-			m_client->mouseRelativeMove(a, b);
-		}
-		else if (type == 0x02) {
-			// absolute sync
-			m_client->mouseMove(a, b);
-		}
+		processMouseDatagram(buf);
 	}
 }
 

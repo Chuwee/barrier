@@ -24,8 +24,16 @@
 #pragma comment(lib, "ws2_32.lib")
 #endif
 
-UDPSocket::UDPSocket() :
+// macOS-specific: required for AWDL socket traffic
+#if defined(__APPLE__)
+#ifndef SO_RECV_ANYIF
+#define SO_RECV_ANYIF 0x1104
+#endif
+#endif
+
+UDPSocket::UDPSocket(bool ipv6) :
     m_fd(UDP_INVALID_SOCKET),
+    m_ipv6(ipv6),
     m_hasTarget(false)
 {
     std::memset(&m_target, 0, sizeof(m_target));
@@ -43,10 +51,28 @@ UDPSocket::~UDPSocket()
 void
 UDPSocket::createSocket()
 {
-    m_fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (m_fd == UDP_INVALID_SOCKET) {
-        LOG((CLOG_ERR "failed to create UDP socket: %s", std::strerror(errno)));
+    if (m_ipv6) {
+        m_fd = ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
     }
+    else {
+        m_fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    }
+
+    if (m_fd == UDP_INVALID_SOCKET) {
+        LOG((CLOG_ERR "failed to create UDP%s socket: %s",
+             m_ipv6 ? "v6" : "", std::strerror(errno)));
+        return;
+    }
+
+#if defined(__APPLE__)
+    if (m_ipv6) {
+        // SO_RECV_ANYIF is required on macOS for AWDL interface traffic
+        int opt = 1;
+        if (setsockopt(m_fd, SOL_SOCKET, SO_RECV_ANYIF, &opt, sizeof(opt)) != 0) {
+            LOG((CLOG_WARN "failed to set SO_RECV_ANYIF: %s", std::strerror(errno)));
+        }
+    }
+#endif
 }
 
 void
@@ -102,21 +128,80 @@ UDPSocket::bind(UInt16 port)
     setsockopt(m_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 #endif
 
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port        = htons(port);
+    if (m_ipv6) {
+        struct sockaddr_in6 addr;
+        std::memset(&addr, 0, sizeof(addr));
+        addr.sin6_family = AF_INET6;
+        addr.sin6_addr   = in6addr_any;
+        addr.sin6_port   = htons(port);
 
-    if (::bind(m_fd, reinterpret_cast<struct sockaddr*>(&addr),
-               sizeof(addr)) != 0) {
-        LOG((CLOG_ERR "failed to bind UDP socket to port %d: %s",
-             port, std::strerror(errno)));
+        if (::bind(m_fd, reinterpret_cast<struct sockaddr*>(&addr),
+                   sizeof(addr)) != 0) {
+            LOG((CLOG_ERR "failed to bind UDPv6 socket to port %d: %s",
+                 port, std::strerror(errno)));
+            return false;
+        }
+        LOG((CLOG_DEBUG "UDPv6 socket bound to port %d", port));
+    }
+    else {
+        struct sockaddr_in addr;
+        std::memset(&addr, 0, sizeof(addr));
+        addr.sin_family      = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_port        = htons(port);
+
+        if (::bind(m_fd, reinterpret_cast<struct sockaddr*>(&addr),
+                   sizeof(addr)) != 0) {
+            LOG((CLOG_ERR "failed to bind UDP socket to port %d: %s",
+                 port, std::strerror(errno)));
+            return false;
+        }
+        LOG((CLOG_DEBUG "UDP socket bound to port %d", port));
+    }
+
+    return true;
+}
+
+bool
+UDPSocket::bindToInterface(const char* ifname, UInt16 port)
+{
+#ifndef _WIN32
+    if (m_fd == UDP_INVALID_SOCKET || !m_ipv6) {
         return false;
     }
 
-    LOG((CLOG_DEBUG "UDP socket bound to port %d", port));
+    // allow address reuse
+    int opt = 1;
+    setsockopt(m_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    unsigned int ifindex = if_nametoindex(ifname);
+    if (ifindex == 0) {
+        LOG((CLOG_ERR "interface \"%s\" not found: %s", ifname, std::strerror(errno)));
+        return false;
+    }
+
+    struct sockaddr_in6 addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sin6_family   = AF_INET6;
+    addr.sin6_addr     = in6addr_any;
+    addr.sin6_port     = htons(port);
+    addr.sin6_scope_id = ifindex;
+
+    if (::bind(m_fd, reinterpret_cast<struct sockaddr*>(&addr),
+               sizeof(addr)) != 0) {
+        LOG((CLOG_ERR "failed to bind UDPv6 socket to %s port %d: %s",
+             ifname, port, std::strerror(errno)));
+        return false;
+    }
+
+    LOG((CLOG_DEBUG "UDPv6 socket bound to %s port %d (scope_id=%u)",
+         ifname, port, ifindex));
     return true;
+#else
+    (void)ifname;
+    (void)port;
+    return false;
+#endif
 }
 
 bool
@@ -127,11 +212,12 @@ UDPSocket::setTarget(const char* host, UInt16 port)
     }
 
     std::memset(&m_target, 0, sizeof(m_target));
-    m_target.sin_family = AF_INET;
-    m_target.sin_port   = htons(port);
+    struct sockaddr_in* target4 = reinterpret_cast<struct sockaddr_in*>(&m_target);
+    target4->sin_family = AF_INET;
+    target4->sin_port   = htons(port);
 
     // try as numeric address first, fall back to DNS resolution
-    if (inet_pton(AF_INET, host, &m_target.sin_addr) != 1) {
+    if (inet_pton(AF_INET, host, &target4->sin_addr) != 1) {
         struct addrinfo hints, *res = NULL;
         std::memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_INET;
@@ -141,7 +227,7 @@ UDPSocket::setTarget(const char* host, UInt16 port)
             m_hasTarget = false;
             return false;
         }
-        m_target.sin_addr =
+        target4->sin_addr =
             reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr;
         freeaddrinfo(res);
     }
@@ -151,6 +237,14 @@ UDPSocket::setTarget(const char* host, UInt16 port)
     return true;
 }
 
+void
+UDPSocket::setTargetIPv6(const struct sockaddr_in6& addr)
+{
+    std::memset(&m_target, 0, sizeof(m_target));
+    std::memcpy(&m_target, &addr, sizeof(addr));
+    m_hasTarget = true;
+}
+
 int
 UDPSocket::send(const void* data, int size)
 {
@@ -158,12 +252,18 @@ UDPSocket::send(const void* data, int size)
         return -1;
     }
 
-    return sendTo(data, size, m_target);
+    if (m_ipv6) {
+        return sendToIPv6(data, size,
+            *reinterpret_cast<const struct sockaddr_in6*>(&m_target));
+    }
+    return sendTo(data, size,
+        *reinterpret_cast<const struct sockaddr_in*>(&m_target));
 }
 
+// generic sendto wrapper — shared by sendTo() and sendToIPv6()
 int
-UDPSocket::sendTo(const void* data, int size,
-                   const struct sockaddr_in& addr)
+UDPSocket::sendToAddr(const void* data, int size,
+                       const struct sockaddr* addr, socklen_t addrLen)
 {
     if (m_fd == UDP_INVALID_SOCKET) {
         return -1;
@@ -171,12 +271,9 @@ UDPSocket::sendTo(const void* data, int size,
 
 #ifdef _WIN32
     int n = ::sendto(m_fd, static_cast<const char*>(data), size, 0,
-                     reinterpret_cast<const struct sockaddr*>(&addr),
-                     sizeof(addr));
+                     addr, addrLen);
 #else
-    ssize_t n = ::sendto(m_fd, data, size, 0,
-                         reinterpret_cast<const struct sockaddr*>(&addr),
-                         sizeof(addr));
+    ssize_t n = ::sendto(m_fd, data, size, 0, addr, addrLen);
 #endif
 
     if (n < 0) {
@@ -197,13 +294,31 @@ UDPSocket::sendTo(const void* data, int size,
 }
 
 int
-UDPSocket::recv(void* buffer, int maxSize, struct sockaddr_in* fromAddr)
+UDPSocket::sendTo(const void* data, int size,
+                   const struct sockaddr_in& addr)
+{
+    return sendToAddr(data, size,
+        reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr));
+}
+
+int
+UDPSocket::sendToIPv6(const void* data, int size,
+                       const struct sockaddr_in6& addr)
+{
+    return sendToAddr(data, size,
+        reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr));
+}
+
+// generic recvfrom wrapper — shared by recv() and recvIPv6()
+int
+UDPSocket::recvFromAddr(void* buffer, int maxSize,
+                         struct sockaddr* fromAddr, socklen_t* fromLen)
 {
     if (m_fd == UDP_INVALID_SOCKET) {
         return -1;
     }
 
-    struct sockaddr_in sender;
+    struct sockaddr_storage sender;
     socklen_t senderLen = sizeof(sender);
     std::memset(&sender, 0, sizeof(sender));
 
@@ -233,9 +348,35 @@ UDPSocket::recv(void* buffer, int maxSize, struct sockaddr_in* fromAddr)
         return -1;
     }
 
-    if (fromAddr != nullptr) {
-        *fromAddr = sender;
+    if (fromAddr != nullptr && fromLen != nullptr) {
+        socklen_t copyLen = (senderLen < *fromLen) ? senderLen : *fromLen;
+        std::memcpy(fromAddr, &sender, copyLen);
+        *fromLen = senderLen;
     }
 
     return static_cast<int>(n);
+}
+
+int
+UDPSocket::recv(void* buffer, int maxSize, struct sockaddr_in* fromAddr)
+{
+    if (fromAddr) {
+        socklen_t len = sizeof(*fromAddr);
+        std::memset(fromAddr, 0, len);
+        return recvFromAddr(buffer, maxSize,
+            reinterpret_cast<struct sockaddr*>(fromAddr), &len);
+    }
+    return recvFromAddr(buffer, maxSize, nullptr, nullptr);
+}
+
+int
+UDPSocket::recvIPv6(void* buffer, int maxSize, struct sockaddr_in6* fromAddr)
+{
+    if (fromAddr) {
+        socklen_t len = sizeof(*fromAddr);
+        std::memset(fromAddr, 0, len);
+        return recvFromAddr(buffer, maxSize,
+            reinterpret_cast<struct sockaddr*>(fromAddr), &len);
+    }
+    return recvFromAddr(buffer, maxSize, nullptr, nullptr);
 }

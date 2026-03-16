@@ -23,6 +23,7 @@
 #include "base/Event.h"
 #include "base/Stopwatch.h"
 #include "net/UDPSocket.h"
+#include "net/P2PTransport.h"
 
 class Client;
 class ClientInfo;
@@ -109,6 +110,7 @@ private:
     void                dragInfoReceived();
     void                udpPort();
     void                pollUdp();
+    void                processMouseDatagram(const UInt8* buf);
     void                handleClipboardSendingEvent(const Event&, void*);
 
 private:
@@ -139,4 +141,7 @@ private:
     UInt32                m_udpLastSeqNum;
     EventQueueTimer*    m_udpPollTimer;
     void                handleUdpPollTimer(const Event&, void*);
+
+    // P2P (AWDL) transport — receives datagrams via direct WiFi P2P
+    P2PTransport*        m_p2pTransport;
 };

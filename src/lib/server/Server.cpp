@@ -44,6 +44,8 @@
 #include "base/TMethodEventJob.h"
 
 #include "net/UDPSocket.h"
+#include "net/P2PTransport.h"
+#include "platform/AWDLTransport.h"
 #include "barrier/ProtocolUtil.h"
 
 #include <cstring>
@@ -99,7 +101,8 @@ Server::Server(
 	m_udpSocket(NULL),
 	m_udpMouseEnabled(false),
 	m_udpSeqNum(0),
-	m_udpSyncInterval(0.5)
+	m_udpSyncInterval(0.5),
+	m_p2pTransport(NULL)
 {
 	// must have a primary client and it must have a canonical name
 	assert(m_primaryClient != NULL);
@@ -255,6 +258,10 @@ Server::~Server()
 							m_inputFilter);
 	m_events->removeHandler(Event::kTimer, this);
 	stopSwitch();
+
+	// clean up P2P transport
+	delete m_p2pTransport;
+	m_p2pTransport = NULL;
 
 	// clean up UDP socket
 	delete m_udpSocket;
@@ -1457,6 +1464,22 @@ Server::processOptions()
 					m_udpSeqNum = 0;
 					m_udpSyncTimer.reset();
 					LOG((CLOG_NOTE "UDP mouse channel enabled on port %d", kDefaultUdpPort));
+
+					// also try to start P2P transport (AWDL on macOS)
+					// only attempt if UDP actually succeeded
+					if (m_p2pTransport == NULL) {
+						m_p2pTransport = new AWDLTransport();
+						std::string serverName = getName(m_primaryClient);
+						if (m_p2pTransport->start(serverName,
+								kDefaultP2pPort)) {
+							LOG((CLOG_NOTE "P2P (AWDL) transport started"));
+						}
+						else {
+							LOG((CLOG_NOTE "P2P transport unavailable, using regular UDP"));
+							delete m_p2pTransport;
+							m_p2pTransport = NULL;
+						}
+					}
 				}
 				else {
 					LOG((CLOG_WARN "failed to bind UDP socket, UDP mouse channel disabled"));
@@ -1471,6 +1494,10 @@ Server::processOptions()
 				m_udpSocket = NULL;
 				m_udpMouseEnabled = false;
 				m_udpClients.clear();
+
+				// stop P2P transport too
+				delete m_p2pTransport;
+				m_p2pTransport = NULL;
 			}
 		}
 		else if (id == kOptionUdpSyncMs) {
@@ -2631,7 +2658,50 @@ Server::forceLeaveClient(BaseClientProxy* client)
 void
 Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
 {
-	if (!m_udpSocket || !m_udpMouseEnabled)
+	if (!m_udpMouseEnabled)
+		return;
+
+	// build the 20-byte datagram first (shared by P2P and regular UDP)
+	// format: [type:1][pad:1][seq:4][a:4][b:4][ts:4][pad:2]
+	UInt8 buf[20];
+	std::memset(buf, 0, sizeof(buf));
+	buf[0] = type;
+	UInt32 seq = ++m_udpSeqNum;
+	buf[2] = static_cast<UInt8>(seq >> 24);
+	buf[3] = static_cast<UInt8>(seq >> 16);
+	buf[4] = static_cast<UInt8>(seq >> 8);
+	buf[5] = static_cast<UInt8>(seq);
+	buf[6]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 24);
+	buf[7]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 16);
+	buf[8]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 8);
+	buf[9]  = static_cast<UInt8>(static_cast<UInt32>(a));
+	buf[10] = static_cast<UInt8>(static_cast<UInt32>(b) >> 24);
+	buf[11] = static_cast<UInt8>(static_cast<UInt32>(b) >> 16);
+	buf[12] = static_cast<UInt8>(static_cast<UInt32>(b) >> 8);
+	buf[13] = static_cast<UInt8>(static_cast<UInt32>(b));
+
+	std::string activeName = getName(m_active);
+
+	// try P2P transport first (lowest latency — bypasses router)
+	// only skip the regular UDP path if the P2P send actually succeeds;
+	// transient failures (interface flap, ENETDOWN, etc.) fall through.
+	if (m_p2pTransport && m_p2pTransport->isActive()) {
+		struct sockaddr_in6 peerAddr;
+		if (m_p2pTransport->findPeer(activeName, peerAddr)) {
+			UDPSocket* p2pSock = m_p2pTransport->getSocket();
+			if (p2pSock) {
+				int sent = p2pSock->sendToIPv6(buf, sizeof(buf), peerAddr);
+				if (sent == sizeof(buf)) {
+					LOG((CLOG_DEBUG2 "sent via P2P to %s", activeName.c_str()));
+					return;
+				}
+				LOG((CLOG_DEBUG "P2P send failed, falling back to UDP"));
+			}
+		}
+	}
+
+	// fall back to regular UDP
+	if (!m_udpSocket)
 		return;
 
 	// drain any incoming hello datagrams to register client addresses
@@ -2651,28 +2721,9 @@ Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
 		}
 	}
 
-	std::string activeName = getName(m_active);
 	UdpClientMap::const_iterator it = m_udpClients.find(activeName);
 	if (it == m_udpClients.end())
 		return;
-
-	// 20-byte datagram: [type:1][pad:1][seq:4][a:4][b:4][ts:4][pad:2]
-	UInt8 buf[20];
-	std::memset(buf, 0, sizeof(buf));
-	buf[0] = type;
-	UInt32 seq = ++m_udpSeqNum;
-	buf[2] = static_cast<UInt8>(seq >> 24);
-	buf[3] = static_cast<UInt8>(seq >> 16);
-	buf[4] = static_cast<UInt8>(seq >> 8);
-	buf[5] = static_cast<UInt8>(seq);
-	buf[6]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 24);
-	buf[7]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 16);
-	buf[8]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 8);
-	buf[9]  = static_cast<UInt8>(static_cast<UInt32>(a));
-	buf[10] = static_cast<UInt8>(static_cast<UInt32>(b) >> 24);
-	buf[11] = static_cast<UInt8>(static_cast<UInt32>(b) >> 16);
-	buf[12] = static_cast<UInt8>(static_cast<UInt32>(b) >> 8);
-	buf[13] = static_cast<UInt8>(static_cast<UInt32>(b));
 
 	m_udpSocket->sendTo(buf, sizeof(buf), it->second);
 }

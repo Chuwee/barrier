@@ -41,6 +41,9 @@ static const UInt16        kDefaultPort = 24800;
 // default UDP port for mouse channel
 static const UInt16        kDefaultUdpPort = 24801;
 
+// default P2P (AWDL) UDP port for mouse channel
+static const UInt16        kDefaultP2pPort = 24802;
+
 // maximum total length for greeting returned by client
 static const UInt32        kMaxHelloLength = 1024;
 

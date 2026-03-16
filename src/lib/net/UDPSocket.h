@@ -30,6 +30,7 @@ typedef SOCKET UDPSocketFD;
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <net/if.h>
 typedef int UDPSocketFD;
 #define UDP_INVALID_SOCKET (-1)
 #endif
@@ -38,10 +39,15 @@ typedef int UDPSocketFD;
 /*!
 A minimal UDP socket for sending and receiving fixed-size datagrams.
 Uses raw POSIX sockets (or Winsock on Windows). Non-blocking.
+Supports both IPv4 and IPv6 (for P2P/AWDL transport).
 */
 class UDPSocket {
 public:
-    UDPSocket();
+    //! Create a UDP socket
+    /*!
+    If \p ipv6 is true, creates an AF_INET6 socket instead of AF_INET.
+    */
+    UDPSocket(bool ipv6 = false);
     ~UDPSocket();
 
     //! Bind to a local port (for server)
@@ -51,13 +57,27 @@ public:
     */
     bool                bind(UInt16 port);
 
-    //! Set the remote address (for client)
+    //! Bind to a specific interface and port (IPv6)
+    /*!
+    Binds the socket to a named interface (e.g. "awdl0") on the
+    given port. Sets sin6_scope_id from the interface name.
+    Returns true on success.
+    */
+    bool                bindToInterface(const char* ifname, UInt16 port);
+
+    //! Set the remote address (for client, IPv4)
     /*!
     Sets the default destination for send(). The address is
     specified as a dotted-quad or hostname string and port.
     Returns true on success.
     */
     bool                setTarget(const char* host, UInt16 port);
+
+    //! Set the remote IPv6 address (for client)
+    /*!
+    Sets the default destination for send() using an IPv6 sockaddr.
+    */
+    void                setTargetIPv6(const struct sockaddr_in6& addr);
 
     //! Send datagram to the configured target
     /*!
@@ -66,15 +86,15 @@ public:
     */
     int                 send(const void* data, int size);
 
-    //! Send datagram to a specific address
-    /*!
-    Sends \p size bytes from \p data to the given sockaddr.
-    Returns the number of bytes sent, or -1 on error.
-    */
+    //! Send datagram to a specific IPv4 address
     int                 sendTo(const void* data, int size,
                             const struct sockaddr_in& addr);
 
-    //! Receive a datagram (non-blocking)
+    //! Send datagram to a specific IPv6 address
+    int                 sendToIPv6(const void* data, int size,
+                            const struct sockaddr_in6& addr);
+
+    //! Receive a datagram (non-blocking, IPv4)
     /*!
     Reads up to \p maxSize bytes into \p buffer. If \p fromAddr is
     not NULL, the sender's address is stored there.
@@ -84,8 +104,15 @@ public:
     int                 recv(void* buffer, int maxSize,
                             struct sockaddr_in* fromAddr = nullptr);
 
+    //! Receive a datagram (non-blocking, IPv6)
+    int                 recvIPv6(void* buffer, int maxSize,
+                            struct sockaddr_in6* fromAddr = nullptr);
+
     //! Check if socket is valid
     bool                isValid() const { return m_fd != UDP_INVALID_SOCKET; }
+
+    //! Check if this is an IPv6 socket
+    bool                isIPv6() const { return m_ipv6; }
 
     //! Get the raw file descriptor
     UDPSocketFD         getFD() const { return m_fd; }
@@ -95,7 +122,14 @@ private:
     void                setNonBlocking();
     void                closeSocket();
 
+    // generic sendto/recvfrom that handle both address families
+    int                 sendToAddr(const void* data, int size,
+                            const struct sockaddr* addr, socklen_t addrLen);
+    int                 recvFromAddr(void* buffer, int maxSize,
+                            struct sockaddr* fromAddr, socklen_t* fromLen);
+
     UDPSocketFD         m_fd;
-    struct sockaddr_in  m_target;
+    bool                m_ipv6;
+    struct sockaddr_storage m_target;
     bool                m_hasTarget;
 };
