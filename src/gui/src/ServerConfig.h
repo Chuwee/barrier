@@ -21,10 +21,12 @@
 #define SERVERCONFIG__H
 
 #include <QList>
+#include <QMap>
 
 #include "Screen.h"
 #include "BaseConfig.h"
 #include "Hotkey.h"
+#include "LinkConfig.h"
 
 class QTextStream;
 class QSettings;
@@ -63,6 +65,11 @@ class ServerConfig : public BaseConfig
         bool ignoreAutoConfigClient() const { return m_IgnoreAutoConfigClient; }
         bool enableDragAndDrop() const { return m_EnableDragAndDrop; }
         bool clipboardSharing() const { return m_ClipboardSharing; }
+
+        const QMap<QString, LinkConfig>& linkConfigs() const { return m_LinkConfigs; }
+        LinkConfig linkConfig(const QString& screenName, const QString& direction) const;
+        void setLinkConfig(const QString& screenName, const QString& direction,
+                           const LinkConfig& config);
 
         void saveSettings();
         void loadSettings();
@@ -126,6 +133,7 @@ class ServerConfig : public BaseConfig
         bool m_EnableDragAndDrop;
         bool m_ClipboardSharing;
         MainWindow* m_pMainWindow;
+        QMap<QString, LinkConfig> m_LinkConfigs;
 };
 
 QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config);

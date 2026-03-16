@@ -258,6 +258,12 @@ OSXScreen::getCursorPos(SInt32& x, SInt32& y) const
 }
 
 void
+OSXScreen::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+	monitors = m_monitors;
+}
+
+void
 OSXScreen::reconfigure(UInt32)
 {
 	// do nothing
@@ -1546,11 +1552,20 @@ OSXScreen::updateScreenShape()
 		return;
 	}
 
-	// get smallest rect enclosing all display rects
+	// get smallest rect enclosing all display rects and store individual
+	// monitor geometries
 	CGRect totalBounds = CGRectZero;
+	m_monitors.clear();
 	for (CGDisplayCount i = 0; i < displayCount; ++i) {
 		CGRect bounds = CGDisplayBounds(displays[i]);
 		totalBounds   = CGRectUnion(totalBounds, bounds);
+
+		MonitorGeometry mg;
+		mg.m_x = (SInt32)bounds.origin.x;
+		mg.m_y = (SInt32)bounds.origin.y;
+		mg.m_w = (SInt32)bounds.size.width;
+		mg.m_h = (SInt32)bounds.size.height;
+		m_monitors.push_back(mg);
 	}
 
 	// get shape of default screen

@@ -63,13 +63,18 @@ public:
     public:
         CellEdge(EDirection side, float position);
         CellEdge(EDirection side, const Interval&);
+        CellEdge(EDirection side, const Interval&, SInt32 srcMonitorIndex);
         CellEdge(const std::string& name, EDirection side, const Interval&);
+        CellEdge(const std::string& name, EDirection side, const Interval&,
+                 SInt32 monitorIndex);
         ~CellEdge();
 
         Interval        getInterval() const;
         void setName(const std::string& newName);
         std::string getName() const;
         EDirection        getSide() const;
+        SInt32            getMonitorIndex() const;
+        SInt32            getSrcMonitorIndex() const;
         bool            overlaps(const CellEdge&) const;
         bool            isInside(float x) const;
 
@@ -79,10 +84,10 @@ public:
         // transform [0,1] to position
         float            inverseTransform(float x) const;
 
-        // compares side and start of interval
+        // compares side, srcMonitorIndex, and start of interval
         bool            operator<(const CellEdge&) const;
 
-        // compares side and interval
+        // compares side, interval, and monitor indices
         bool            operator==(const CellEdge&) const;
         bool            operator!=(const CellEdge&) const;
 
@@ -93,6 +98,8 @@ public:
         std::string m_name;
         EDirection        m_side;
         Interval        m_interval;
+        SInt32            m_monitorIndex;
+        SInt32            m_srcMonitorIndex;
     };
 
 private:
@@ -124,6 +131,9 @@ private:
         bool            overlaps(const CellEdge&) const;
 
         bool            getLink(EDirection side, float position,
+                            const CellEdge*& src, const CellEdge*& dst) const;
+        bool            getLink(EDirection side, float position,
+                            SInt32 srcMonitorIndex,
                             const CellEdge*& src, const CellEdge*& dst) const;
 
         bool            operator==(const Cell&) const;
@@ -360,6 +370,17 @@ public:
     std::string getNeighbor(const std::string&, EDirection,
                             float position, float* positionOut) const;
 
+    //! Get neighbor with monitor index
+    std::string getNeighbor(const std::string&, EDirection,
+                            float position, float* positionOut,
+                            SInt32* monitorIndexOut) const;
+
+    //! Get neighbor from a specific source monitor
+    std::string getNeighbor(const std::string& srcName, EDirection srcSide,
+                            float position, float* positionOut,
+                            SInt32 srcMonitorIndex,
+                            SInt32* dstMonitorIndexOut) const;
+
     //! Check for neighbor
     /*!
     Returns \c true if the screen has a neighbor anywhere along the edge
@@ -373,6 +394,9 @@ public:
     the edge given by the direction.
     */
     bool hasNeighbor(const std::string&, EDirection, float start, float end) const;
+
+    //! Check for neighbor on a specific source monitor
+    bool hasNeighbor(const std::string&, EDirection, SInt32 srcMonitorIndex) const;
 
     //! Get beginning neighbor iterator
     link_const_iterator beginNeighbor(const std::string&) const;
@@ -452,6 +476,9 @@ private:
                      const std::vector<std::string>& args, InputFilter::Rule&, bool activate);
 
     void parseScreens(ConfigReadContext&, const std::string&, std::set<std::string>& screens) const;
+
+    void                generateReverseMappings();
+    static EDirection    oppositeDirection(EDirection);
 
     static const char*    getOptionName(OptionID);
     static std::string getOptionValue(OptionID, OptionValue);

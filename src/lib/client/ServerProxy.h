@@ -73,6 +73,7 @@ private:
     void                flushCompressedMouse();
 
     void                sendInfo(const ClientInfo&);
+    void                sendMonitorInfo();
 
     void                resetKeepAliveAlarm();
     void                setKeepAliveRate(double);

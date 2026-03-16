@@ -65,6 +65,7 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     }
 
     m_pScreenSetupView->setModel(&m_ScreenSetupModel);
+    m_pScreenSetupView->setServerConfig(&m_ServerConfig);
 
     if (serverConfig().numScreens() == 0)
         model().screen(serverConfig().numColumns() / 2, serverConfig().numRows() / 2) = Screen(defaultScreenName);

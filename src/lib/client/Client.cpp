@@ -70,7 +70,8 @@ Client::Client(IEventQueue* events, const std::string& name, const NetworkAddres
     m_socket(NULL),
     m_useSecureNetwork(args.m_enableCrypto),
     m_args(args),
-    m_enableClipboard(true)
+    m_enableClipboard(true),
+    m_serverProtocolMinor(0)
 {
     assert(m_socketFactory != NULL);
     assert(m_screen        != NULL);
@@ -238,6 +239,12 @@ void
 Client::getCursorPos(SInt32& x, SInt32& y) const
 {
     m_screen->getCursorPos(x, y);
+}
+
+void
+Client::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+    m_screen->getMonitors(monitors);
 }
 
 void
@@ -693,15 +700,21 @@ Client::handleHello(const Event&, void*)
         return;
     }
 
-    // check versions
+    // check versions — accept servers >= 1.6 for backward compatibility.
+    // new features (e.g. DMON monitor info in 1.7) are gated on the actual
+    // server version stored below.
+    static const SInt16 kMinServerMinorVersion = 6;
     LOG((CLOG_DEBUG1 "got hello version %d.%d", major, minor));
     if (major < kProtocolMajorVersion ||
-        (major == kProtocolMajorVersion && minor < kProtocolMinorVersion)) {
+        (major == kProtocolMajorVersion && minor < kMinServerMinorVersion)) {
         sendConnectionFailedEvent(XIncompatibleClient(major, minor).what());
         cleanupTimer();
         cleanupConnection();
         return;
     }
+
+    // store the server's protocol version for feature gating
+    m_serverProtocolMinor = minor;
 
     // say hello back
     LOG((CLOG_DEBUG1 "say hello version %d.%d", kProtocolMajorVersion, kProtocolMinorVersion));

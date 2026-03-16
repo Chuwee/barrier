@@ -584,21 +584,237 @@ Server::mapToPixel(BaseClientProxy* client,
 	}
 }
 
+void
+Server::mapToPixelOnMonitor(BaseClientProxy* client,
+				EDirection dir, float f, SInt32 monitorIndex,
+				SInt32& x, SInt32& y) const
+{
+	std::vector<MonitorGeometry> monitors;
+	client->getMonitors(monitors);
+
+	if (monitorIndex < 0 || monitorIndex >= (SInt32)monitors.size()) {
+		// fallback to combined screen
+		mapToPixel(client, dir, f, x, y);
+		return;
+	}
+
+	const MonitorGeometry& mg = monitors[monitorIndex];
+	switch (dir) {
+	case kLeft:
+		x = mg.m_x;
+		y = static_cast<SInt32>(f * mg.m_h) + mg.m_y;
+		break;
+
+	case kRight:
+		x = mg.m_x + mg.m_w - 1;
+		y = static_cast<SInt32>(f * mg.m_h) + mg.m_y;
+		break;
+
+	case kTop:
+		y = mg.m_y;
+		x = static_cast<SInt32>(f * mg.m_w) + mg.m_x;
+		break;
+
+	case kBottom:
+		y = mg.m_y + mg.m_h - 1;
+		x = static_cast<SInt32>(f * mg.m_w) + mg.m_x;
+		break;
+
+	case kNoDirection:
+		assert(0 && "bad direction");
+		break;
+	}
+}
+
+bool
+Server::checkInternalMonitorEdge(SInt32 x, SInt32 y,
+				EDirection& dir, SInt32& monitorIndex) const
+{
+	std::vector<MonitorGeometry> monitors;
+	m_primaryClient->getMonitors(monitors);
+
+	if (monitors.size() <= 1) {
+		return false;
+	}
+
+	// get combined screen shape
+	SInt32 ax, ay, aw, ah;
+	m_active->getShape(ax, ay, aw, ah);
+
+	// previous position — use crossing test so fast mouse motion
+	// that jumps over the seam is still detected
+	SInt32 px = x - m_xDelta;
+	SInt32 py = y - m_yDelta;
+
+	std::string srcName = getName(m_primaryClient);
+
+	for (SInt32 i = 0; i < (SInt32)monitors.size(); ++i) {
+		const MonitorGeometry& mg = monitors[i];
+		SInt32 mRight  = mg.m_x + mg.m_w;  // first pixel past right edge
+		SInt32 mBottom = mg.m_y + mg.m_h;   // first pixel past bottom edge
+
+		// right internal edge: cursor crossed from inside this monitor
+		// to at-or-past its right boundary, and it's not the combined
+		// screen's outer right edge
+		if (mRight < ax + aw &&             // internal edge
+			px < mRight && x >= mRight - 1 && // crossed the seam
+			m_xDelta > 0 &&
+			y >= mg.m_y && y < mBottom) {
+			if (m_config->hasNeighbor(srcName, kRight, i)) {
+				dir = kRight;
+				monitorIndex = i;
+				return true;
+			}
+		}
+
+		// left internal edge: cursor crossed from inside this monitor
+		// to at-or-past its left boundary
+		if (mg.m_x > ax &&                  // internal edge
+			px >= mg.m_x && x <= mg.m_x &&  // crossed the seam
+			m_xDelta < 0 &&
+			y >= mg.m_y && y < mBottom) {
+			if (m_config->hasNeighbor(srcName, kLeft, i)) {
+				dir = kLeft;
+				monitorIndex = i;
+				return true;
+			}
+		}
+
+		// top internal edge
+		if (mg.m_y > ay &&
+			py >= mg.m_y && y <= mg.m_y &&
+			m_yDelta < 0 &&
+			x >= mg.m_x && x < mRight) {
+			if (m_config->hasNeighbor(srcName, kTop, i)) {
+				dir = kTop;
+				monitorIndex = i;
+				return true;
+			}
+		}
+
+		// bottom internal edge
+		if (mBottom < ay + ah &&
+			py < mBottom && y >= mBottom - 1 &&
+			m_yDelta > 0 &&
+			x >= mg.m_x && x < mRight) {
+			if (m_config->hasNeighbor(srcName, kBottom, i)) {
+				dir = kBottom;
+				monitorIndex = i;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+BaseClientProxy*
+Server::getNeighborFromMonitor(BaseClientProxy* src,
+				EDirection dir, SInt32 srcMonitorIndex,
+				SInt32& x, SInt32& y) const
+{
+	assert(src != NULL);
+
+	std::string srcName = getName(src);
+	assert(!srcName.empty());
+
+	// get monitors to compute fraction relative to the specific monitor
+	std::vector<MonitorGeometry> monitors;
+	src->getMonitors(monitors);
+
+	if (srcMonitorIndex < 0 || srcMonitorIndex >= (SInt32)monitors.size()) {
+		return NULL;
+	}
+
+	const MonitorGeometry& mg = monitors[srcMonitorIndex];
+
+	// compute fraction relative to the specific monitor
+	float t;
+	switch (dir) {
+	case kLeft:
+	case kRight:
+		t = static_cast<float>(y - mg.m_y + 0.5f) / static_cast<float>(mg.m_h);
+		break;
+	case kTop:
+	case kBottom:
+		t = static_cast<float>(x - mg.m_x + 0.5f) / static_cast<float>(mg.m_w);
+		break;
+	default:
+		return NULL;
+	}
+
+	// clamp
+	if (t < 0.0f) t = 0.0f;
+	if (t > 1.0f) t = 1.0f;
+
+	float tOut;
+	SInt32 dstMonitorIndex = -1;
+	std::string dstName = m_config->getNeighbor(srcName, dir, t, &tOut,
+												srcMonitorIndex, &dstMonitorIndex);
+
+	if (dstName.empty()) {
+		return NULL;
+	}
+
+	// look up destination client
+	ClientList::const_iterator index = m_clients.find(dstName);
+	if (index == m_clients.end()) {
+		return NULL;
+	}
+
+	// map to pixels
+	if (dstMonitorIndex >= 0) {
+		mapToPixelOnMonitor(index->second, dir, tOut, dstMonitorIndex, x, y);
+	}
+	else {
+		mapToPixel(index->second, dir, tOut, x, y);
+	}
+
+	avoidJumpZone(index->second, dir, x, y);
+	return index->second;
+}
+
 bool
 Server::hasAnyNeighbor(BaseClientProxy* client, EDirection dir) const
 {
 	assert(client != NULL);
 
-	return m_config->hasNeighbor(getName(client), dir);
+	std::string name = getName(client);
+
+	// check whole-screen edges
+	if (m_config->hasNeighbor(name, dir)) {
+		return true;
+	}
+
+	// also check monitor-specific edges
+	std::vector<MonitorGeometry> monitors;
+	client->getMonitors(monitors);
+	for (SInt32 i = 0; i < (SInt32)monitors.size(); ++i) {
+		if (m_config->hasNeighbor(name, dir, i)) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 BaseClientProxy*
 Server::getNeighbor(BaseClientProxy* src,
 				EDirection dir, SInt32& x, SInt32& y) const
 {
+	bool unused;
+	return getNeighbor(src, dir, x, y, unused);
+}
+
+BaseClientProxy*
+Server::getNeighbor(BaseClientProxy* src,
+				EDirection dir, SInt32& x, SInt32& y,
+				bool& usedMonitorTarget) const
+{
 	// note -- must be locked on entry
 
 	assert(src != NULL);
+	usedMonitorTarget = false;
 
 	// get source screen name
     std::string srcName = getName(src);
@@ -610,8 +826,9 @@ Server::getNeighbor(BaseClientProxy* src,
 
 	// search for the closest neighbor that exists in direction dir
 	float tTmp;
+	SInt32 monitorIndex = -1;
 	for (;;) {
-        std::string dstName(m_config->getNeighbor(srcName, dir, t, &tTmp));
+        std::string dstName(m_config->getNeighbor(srcName, dir, t, &tTmp, &monitorIndex));
 
 		// if nothing in that direction then return NULL. if the
 		// destination is the source then we can make no more
@@ -627,7 +844,13 @@ Server::getNeighbor(BaseClientProxy* src,
 		ClientList::const_iterator index = m_clients.find(dstName);
 		if (index != m_clients.end()) {
 			LOG((CLOG_DEBUG2 "\"%s\" is on %s of \"%s\" at %f", dstName.c_str(), Config::dirName(dir), srcName.c_str(), t));
-			mapToPixel(index->second, dir, tTmp, x, y);
+			if (monitorIndex >= 0) {
+				mapToPixelOnMonitor(index->second, dir, tTmp, monitorIndex, x, y);
+				usedMonitorTarget = true;
+			}
+			else {
+				mapToPixel(index->second, dir, tTmp, x, y);
+			}
 			return index->second;
 		}
 
@@ -649,9 +872,17 @@ Server::mapToNeighbor(BaseClientProxy* src,
 	assert(src != NULL);
 
 	// get the first neighbor
-	BaseClientProxy* dst = getNeighbor(src, srcSide, x, y);
+	bool usedMonitorTarget = false;
+	BaseClientProxy* dst = getNeighbor(src, srcSide, x, y, usedMonitorTarget);
 	if (dst == NULL) {
 		return NULL;
+	}
+
+	// if monitor-specific targeting was used, x,y are already exact
+	// pixel coordinates on the target monitor — skip the walk-through
+	if (usedMonitorTarget) {
+		avoidJumpZone(dst, srcSide, x, y);
+		return dst;
 	}
 
 	// get the source screen's size
@@ -1798,7 +2029,18 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 		dirv = kBottom;
 	}
 	if (dirh == kNoDirection && dirv == kNoDirection) {
-		// still on local screen
+		// check for internal monitor edge crossings
+		EDirection internalDir;
+		SInt32 srcMonIdx;
+		if (checkInternalMonitorEdge(x, y, internalDir, srcMonIdx)) {
+			SInt32 xSwitch = x, ySwitch = y;
+			BaseClientProxy* newScreen = getNeighborFromMonitor(
+				m_active, internalDir, srcMonIdx, xSwitch, ySwitch);
+			if (isSwitchOkay(newScreen, internalDir, xSwitch, ySwitch, xc, yc)) {
+				switchScreen(newScreen, xSwitch, ySwitch, false);
+				return true;
+			}
+		}
 		noSwitch(x, y);
 		return false;
 	}

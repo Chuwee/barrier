@@ -33,6 +33,7 @@ set(GUI_SOURCE_FILES
     src/HotkeyDialog.cpp
     src/IpcClient.cpp
     src/Ipc.cpp
+    src/LinkSettingsDialog.cpp
     src/IpcReader.cpp
     src/KeySequenceWidget.cpp
     src/LogWindow.cpp
@@ -73,6 +74,8 @@ set(GUI_HEADER_FILES
     src/HotkeyDialog.h
     src/IpcClient.h
     src/Ipc.h
+    src/LinkConfig.h
+    src/LinkSettingsDialog.h
     src/IpcReader.h
     src/KeySequenceWidget.h
     src/LogWindow.h

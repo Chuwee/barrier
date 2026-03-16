@@ -514,6 +514,31 @@ MSWindowsScreen::getCursorPos(SInt32& x, SInt32& y) const
     m_desks->getCursorPos(x, y);
 }
 
+static BOOL CALLBACK monitorEnumProc(HMONITOR, HDC, LPRECT rect, LPARAM data)
+{
+    std::vector<MonitorGeometry>* monitors =
+        reinterpret_cast<std::vector<MonitorGeometry>*>(data);
+    MonitorGeometry mg;
+    mg.m_x = rect->left;
+    mg.m_y = rect->top;
+    mg.m_w = rect->right - rect->left;
+    mg.m_h = rect->bottom - rect->top;
+    monitors->push_back(mg);
+    return TRUE;
+}
+
+void
+MSWindowsScreen::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+    monitors.clear();
+    EnumDisplayMonitors(NULL, NULL, monitorEnumProc,
+                        reinterpret_cast<LPARAM>(&monitors));
+    if (monitors.empty()) {
+        // fallback to single combined screen
+        IPlatformScreen::getMonitors(monitors);
+    }
+}
+
 void
 MSWindowsScreen::reconfigure(UInt32 activeSides)
 {

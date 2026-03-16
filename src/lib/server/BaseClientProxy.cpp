@@ -49,6 +49,16 @@ BaseClientProxy::getJumpCursorPos(SInt32& x, SInt32& y) const
     y = m_y;
 }
 
+void
+BaseClientProxy::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+    // default: return single monitor matching combined screen shape
+    monitors.clear();
+    MonitorGeometry mg;
+    getShape(mg.m_x, mg.m_y, mg.m_w, mg.m_h);
+    monitors.push_back(mg);
+}
+
 std::string BaseClientProxy::getName() const
 {
     return m_name;

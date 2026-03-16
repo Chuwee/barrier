@@ -138,6 +138,23 @@ void ServerConfig::saveSettings()
     }
     settings().endArray();
 
+    settings().beginWriteArray("linkConfigs");
+    {
+        int idx = 0;
+        for (auto it = m_LinkConfigs.constBegin(); it != m_LinkConfigs.constEnd(); ++it, ++idx)
+        {
+            settings().setArrayIndex(idx);
+            settings().setValue("key", it.key());
+            settings().setValue("srcStart", it.value().srcStart);
+            settings().setValue("srcEnd", it.value().srcEnd);
+            settings().setValue("dstStart", it.value().dstStart);
+            settings().setValue("dstEnd", it.value().dstEnd);
+            settings().setValue("monitorIndex", it.value().monitorIndex);
+            settings().setValue("srcMonitorIndex", it.value().srcMonitorIndex);
+        }
+    }
+    settings().endArray();
+
     settings().endGroup();
 }
 
@@ -187,6 +204,24 @@ void ServerConfig::loadSettings()
     }
     settings().endArray();
 
+    int numLinkConfigs = settings().beginReadArray("linkConfigs");
+    m_LinkConfigs.clear();
+    for (int i = 0; i < numLinkConfigs; i++)
+    {
+        settings().setArrayIndex(i);
+        QString key = settings().value("key").toString();
+        LinkConfig lc;
+        lc.srcStart = settings().value("srcStart", 0).toInt();
+        lc.srcEnd = settings().value("srcEnd", 100).toInt();
+        lc.dstStart = settings().value("dstStart", 0).toInt();
+        lc.dstEnd = settings().value("dstEnd", 100).toInt();
+        lc.monitorIndex = settings().value("monitorIndex", -1).toInt();
+        lc.srcMonitorIndex = settings().value("srcMonitorIndex", -1).toInt();
+        if (!lc.isDefault())
+            m_LinkConfigs[key] = lc;
+    }
+    settings().endArray();
+
     settings().endGroup();
 }
 
@@ -233,13 +268,50 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
     for (int i = 0; i < config.screens().size(); i++)
         if (!config.screens()[i].isNull())
         {
-            outStream << "\t" << config.screens()[i].name() << ":" << endl;
+            // collect links grouped by srcMonitorIndex
+            // -1 = whole screen, 0+ = specific monitor
+            QMap<int, QList<int>> monitorGroups; // srcMonitorIndex -> list of direction indices
 
             for (unsigned int j = 0; j < sizeof(neighbourDirs) / sizeof(neighbourDirs[0]); j++)
             {
                 int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
                 if (idx != -1 && !config.screens()[idx].isNull())
-                    outStream << "\t\t" << neighbourDirs[j].name << " = " << config.screens()[idx].name() << endl;
+                {
+                    LinkConfig lc = config.linkConfig(
+                        config.screens()[i].name(),
+                        QString(neighbourDirs[j].name));
+                    monitorGroups[lc.srcMonitorIndex].append(j);
+                }
+            }
+
+            for (auto it = monitorGroups.constBegin(); it != monitorGroups.constEnd(); ++it)
+            {
+                if (it.key() < 0) {
+                    outStream << "\t" << config.screens()[i].name() << ":" << endl;
+                } else {
+                    outStream << "\t" << config.screens()[i].name() << "@" << it.key() << ":" << endl;
+                }
+
+                for (int j : it.value())
+                {
+                    int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
+                    LinkConfig lc = config.linkConfig(
+                        config.screens()[i].name(),
+                        QString(neighbourDirs[j].name));
+
+                    // write direction with optional source interval
+                    outStream << "\t\t" << neighbourDirs[j].name;
+                    if (lc.srcStart != 0 || lc.srcEnd != 100)
+                        outStream << "(" << lc.srcStart << "," << lc.srcEnd << ")";
+
+                    // write destination screen with optional @monitor and interval
+                    outStream << " = " << config.screens()[idx].name();
+                    if (lc.monitorIndex >= 0)
+                        outStream << "@" << lc.monitorIndex;
+                    if (lc.dstStart != 0 || lc.dstEnd != 100)
+                        outStream << "(" << lc.dstStart << "," << lc.dstEnd << ")";
+                    outStream << endl;
+                }
             }
         }
 
@@ -279,6 +351,24 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
     outStream << "end" << endl << endl;
 
     return outStream;
+}
+
+LinkConfig ServerConfig::linkConfig(const QString& screenName, const QString& direction) const
+{
+    QString key = linkConfigKey(screenName, direction);
+    if (m_LinkConfigs.contains(key))
+        return m_LinkConfigs[key];
+    return LinkConfig();
+}
+
+void ServerConfig::setLinkConfig(const QString& screenName, const QString& direction,
+                                  const LinkConfig& config)
+{
+    QString key = linkConfigKey(screenName, direction);
+    if (config.isDefault())
+        m_LinkConfigs.remove(key);
+    else
+        m_LinkConfigs[key] = config;
 }
 
 int ServerConfig::numScreens() const

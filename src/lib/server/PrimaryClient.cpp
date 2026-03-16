@@ -126,6 +126,12 @@ PrimaryClient::getCursorPos(SInt32& x, SInt32& y) const
 }
 
 void
+PrimaryClient::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+    m_screen->getMonitors(monitors);
+}
+
+void
 PrimaryClient::enable()
 {
     m_screen->enable();

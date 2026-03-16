@@ -18,6 +18,7 @@
 
 #include "platform/XWindowsScreen.h"
 
+#include "barrier/protocol_types.h"
 #include "platform/XWindowsClipboard.h"
 #include "platform/XWindowsEventQueueBuffer.h"
 #include "platform/XWindowsKeyState.h"
@@ -493,6 +494,40 @@ XWindowsScreen::getCursorPos(SInt32& x, SInt32& y) const
 	else {
 		x = m_xCenter;
 		y = m_yCenter;
+	}
+}
+
+void
+XWindowsScreen::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+	monitors.clear();
+
+#if HAVE_X11_EXTENSIONS_XINERAMA_H
+	int eventBase, errorBase;
+	if (m_impl->XineramaQueryExtension(m_display, &eventBase, &errorBase) &&
+		m_impl->XineramaIsActive(m_display)) {
+		int numScreens;
+		XineramaScreenInfo* screens;
+		screens = reinterpret_cast<XineramaScreenInfo*>(
+			XineramaQueryScreens(m_display, &numScreens));
+
+		if (screens != NULL) {
+			for (int i = 0; i < numScreens; ++i) {
+				MonitorGeometry mg;
+				mg.m_x = screens[i].x_org;
+				mg.m_y = screens[i].y_org;
+				mg.m_w = screens[i].width;
+				mg.m_h = screens[i].height;
+				monitors.push_back(mg);
+			}
+			XFree(screens);
+		}
+	}
+#endif
+
+	if (monitors.empty()) {
+		// fallback to single combined screen
+		IPlatformScreen::getMonitors(monitors);
 	}
 }
 

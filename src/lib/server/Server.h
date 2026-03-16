@@ -217,6 +217,11 @@ private:
     void                mapToPixel(BaseClientProxy*, EDirection, float f,
                             SInt32& x, SInt32& y) const;
 
+    // convert fraction to pixel position on a specific monitor
+    void                mapToPixelOnMonitor(BaseClientProxy*, EDirection,
+                            float f, SInt32 monitorIndex,
+                            SInt32& x, SInt32& y) const;
+
     // returns true if the client has a neighbor anywhere along the edge
     // indicated by the direction.
     bool                hasAnyNeighbor(BaseClientProxy*, EDirection) const;
@@ -225,6 +230,9 @@ private:
     // the direction to the neighbor's coordinate space.
     BaseClientProxy*    getNeighbor(BaseClientProxy*, EDirection,
                             SInt32& x, SInt32& y) const;
+    BaseClientProxy*    getNeighbor(BaseClientProxy*, EDirection,
+                            SInt32& x, SInt32& y,
+                            bool& usedMonitorTarget) const;
 
     // lookup neighboring screen.  given a position relative to the
     // source screen, find the screen we should move onto and where.
@@ -232,6 +240,16 @@ private:
     // cross multiple screens.  if there is no suitable screen then
     // return NULL and x,y are not modified.
     BaseClientProxy*    mapToNeighbor(BaseClientProxy*, EDirection,
+                            SInt32& x, SInt32& y) const;
+
+    // check if cursor is at an internal monitor boundary that has
+    // a configured link.  returns true if an internal edge was hit.
+    bool                checkInternalMonitorEdge(SInt32 x, SInt32 y,
+                            EDirection& dir, SInt32& monitorIndex) const;
+
+    // get the neighbor from a specific source monitor edge
+    BaseClientProxy*    getNeighborFromMonitor(BaseClientProxy* src,
+                            EDirection dir, SInt32 srcMonitorIndex,
                             SInt32& x, SInt32& y) const;
 
     // adjusts x and y or neither to avoid ending up in a jump zone

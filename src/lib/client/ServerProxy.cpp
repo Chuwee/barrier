@@ -861,6 +861,11 @@ ServerProxy::queryInfo()
     m_client->getShape(info.m_x, info.m_y, info.m_w, info.m_h);
     m_client->getCursorPos(info.m_mx, info.m_my);
     sendInfo(info);
+
+    // send individual monitor geometries only to servers that support it
+    if (m_client->getServerProtocolMinor() >= 7) {
+        sendMonitorInfo();
+    }
 }
 
 void
@@ -910,6 +915,32 @@ void
 ServerProxy::fileChunkSending(UInt8 mark, char* data, size_t dataSize)
 {
     FileChunk::send(m_stream, mark, data, dataSize);
+}
+
+void
+ServerProxy::sendMonitorInfo()
+{
+    std::vector<MonitorGeometry> monitors;
+    m_client->getMonitors(monitors);
+
+    if (monitors.empty()) {
+        return;
+    }
+
+    // write DMON header with count
+    SInt16 count = static_cast<SInt16>(monitors.size());
+    ProtocolUtil::writef(m_stream, kMsgDMonitorInfo, count);
+
+    // write each monitor's geometry
+    for (size_t i = 0; i < monitors.size(); ++i) {
+        ProtocolUtil::writef(m_stream, "%2i%2i%2i%2i",
+            static_cast<SInt16>(monitors[i].m_x),
+            static_cast<SInt16>(monitors[i].m_y),
+            static_cast<SInt16>(monitors[i].m_w),
+            static_cast<SInt16>(monitors[i].m_h));
+    }
+
+    LOG((CLOG_DEBUG "sent %d monitor geometries to server", count));
 }
 
 void
