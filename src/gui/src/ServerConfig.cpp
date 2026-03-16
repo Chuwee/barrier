@@ -456,7 +456,7 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
 bool ServerConfig::hasScreen(const QString& name) const
 {
     for (const Screen& s : screens()) {
-        if (!s.isNull() && s.name() == name)
+        if (!s.isNull() && s.name().compare(name, Qt::CaseInsensitive) == 0)
             return true;
     }
     return false;
