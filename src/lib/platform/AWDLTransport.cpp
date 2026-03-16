@@ -70,11 +70,14 @@ AWDLTransport::start(const std::string& serviceName, UInt16 port)
         return false;
     }
 
-    // Register our service with P2P interface to activate AWDL
+    // Register our service on all interfaces with P2P flag to activate AWDL.
+    // Using kDNSServiceInterfaceIndexAny + kDNSServiceFlagsIncludeP2P is the
+    // documented way to activate the AWDL driver for third-party apps.
+    // kDNSServiceInterfaceIndexP2P alone doesn't reliably wake the driver.
     DNSServiceErrorType err = DNSServiceRegister(
         &m_registerRef,
-        0,                                  // flags
-        kDNSServiceInterfaceIndexP2P,       // P2P interface
+        kDNSServiceFlagsIncludeP2P,         // include P2P interfaces
+        kDNSServiceInterfaceIndexAny,       // all interfaces
         serviceName.c_str(),
         kServiceType,
         nullptr,                            // domain (default)
@@ -94,11 +97,11 @@ AWDLTransport::start(const std::string& serviceName, UInt16 port)
     LOG((CLOG_NOTE "AWDL: service registered as \"%s\" on port %d",
          serviceName.c_str(), port));
 
-    // Browse for peers with P2P interface
+    // Browse for peers on all interfaces with P2P flag
     err = DNSServiceBrowse(
         &m_browseRef,
-        0,                                  // flags
-        kDNSServiceInterfaceIndexP2P,       // P2P interface
+        kDNSServiceFlagsIncludeP2P,         // include P2P interfaces
+        kDNSServiceInterfaceIndexAny,       // all interfaces
         kServiceType,
         nullptr,                            // domain (default)
         browseCallback,
@@ -359,8 +362,11 @@ AWDLTransport::browseCallback(
         return;
     }
 
-    LOG((CLOG_NOTE "AWDL: peer discovered: %s on interface %u",
-         serviceName, interfaceIndex));
+    // log interface name for debugging
+    char ifname[IF_NAMESIZE] = {};
+    if_indextoname(interfaceIndex, ifname);
+    LOG((CLOG_NOTE "AWDL: peer discovered: %s on interface %u (%s)",
+         serviceName, interfaceIndex, ifname));
 
     // Start async resolve — the ref will be polled in the event loop
     auto rctx = std::make_shared<ResolveContext>();
@@ -373,7 +379,7 @@ AWDLTransport::browseCallback(
     DNSServiceRef resolveRef = nullptr;
     DNSServiceErrorType err = DNSServiceResolve(
         &resolveRef,
-        0,
+        kDNSServiceFlagsIncludeP2P,
         interfaceIndex,
         serviceName,
         regtype,
@@ -434,7 +440,7 @@ AWDLTransport::resolveCallback(
     DNSServiceRef addrRef = nullptr;
     DNSServiceErrorType err = DNSServiceGetAddrInfo(
         &addrRef,
-        0,
+        kDNSServiceFlagsIncludeP2P,
         interfaceIndex,
         kDNSServiceProtocol_IPv6,
         hosttarget,
