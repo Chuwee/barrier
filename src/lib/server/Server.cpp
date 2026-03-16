@@ -2246,8 +2246,15 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 	// have no idea where it really is.
 	if (m_relativeMoves && isLockedToScreenServer()) {
 		LOG((CLOG_DEBUG2 "relative move on %s by %d,%d", getName(m_active).c_str(), dx, dy));
-		if (m_udpMouseEnabled && m_udpSocket != NULL &&
-			m_udpClients.count(getName(m_active)) > 0) {
+		bool haveP2pPeerRel = false;
+		if (m_p2pTransport && m_p2pTransport->isActive()) {
+			struct sockaddr_in6 dummy;
+			haveP2pPeerRel = m_p2pTransport->findPeer(
+				getName(m_active), dummy);
+		}
+		if (m_udpMouseEnabled &&
+			(m_udpClients.count(getName(m_active)) > 0 ||
+			 haveP2pPeerRel)) {
 			sendUdpDatagram(0x01, dx, dy);
 		}
 		else {
@@ -2396,9 +2403,16 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 		// warp cursor if it moved.
 		if (m_x != xOld || m_y != yOld) {
 			LOG((CLOG_DEBUG2 "move on %s to %d,%d", getName(m_active).c_str(), m_x, m_y));
+			bool haveP2pPeer = false;
+			if (m_p2pTransport && m_p2pTransport->isActive()) {
+				struct sockaddr_in6 dummy;
+				haveP2pPeer = m_p2pTransport->findPeer(
+					getName(m_active), dummy);
+			}
 			if (m_udpMouseEnabled && m_active != m_primaryClient &&
-					m_udpClients.count(getName(m_active)) > 0) {
-				// send relative delta via UDP (low latency)
+					(m_udpClients.count(getName(m_active)) > 0 ||
+					 haveP2pPeer)) {
+				// send relative delta via UDP/P2P (low latency)
 				sendUdpDatagram(0x01, dx, dy);
 				// periodically send absolute sync to correct drift
 				if (m_udpSyncInterval > 0.0 &&

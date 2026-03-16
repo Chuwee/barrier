@@ -52,19 +52,20 @@ AWDLTransport::start(const std::string& serviceName, UInt16 port)
     m_serviceName = serviceName;
     m_port = port;
 
-    // Create IPv6 UDP socket for AWDL
+    // Create IPv6 UDP socket for P2P datagrams.
+    // Bind to all interfaces (not just awdl0) so we can reach peers
+    // discovered on any interface. SO_RECV_ANYIF (set by UDPSocket)
+    // ensures we can also receive on awdl0 if AWDL activates.
     m_socket = new UDPSocket(true);
     if (!m_socket->isValid()) {
-        LOG((CLOG_ERR "AWDL: failed to create IPv6 UDP socket"));
+        LOG((CLOG_ERR "P2P: failed to create IPv6 UDP socket"));
         delete m_socket;
         m_socket = nullptr;
         return false;
     }
 
-    // Bind to awdl0 interface
-    if (!m_socket->bindToInterface(kAWDLInterface, port)) {
-        LOG((CLOG_WARN "AWDL: failed to bind to %s (interface may not exist)",
-             kAWDLInterface));
+    if (!m_socket->bind(port)) {
+        LOG((CLOG_WARN "P2P: failed to bind IPv6 UDP socket to port %d", port));
         delete m_socket;
         m_socket = nullptr;
         return false;
