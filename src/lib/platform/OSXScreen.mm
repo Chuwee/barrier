@@ -39,6 +39,7 @@
 #include "base/IEventQueue.h"
 #include "base/TMethodEventJob.h"
 
+#include <algorithm>
 #include <math.h>
 #include <mach-o/dyld.h>
 #include <AvailabilityMacros.h>
@@ -1567,6 +1568,13 @@ OSXScreen::updateScreenShape()
 		mg.m_h = (SInt32)bounds.size.height;
 		m_monitors.push_back(mg);
 	}
+
+	// sort monitors left-to-right, top-to-bottom to match GUI index assignment
+	std::sort(m_monitors.begin(), m_monitors.end(),
+		[](const MonitorGeometry& a, const MonitorGeometry& b) {
+			if (a.m_x != b.m_x) return a.m_x < b.m_x;
+			return a.m_y < b.m_y;
+		});
 
 	// get shape of default screen
 	m_x = (SInt32)totalBounds.origin.x;

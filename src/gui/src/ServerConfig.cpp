@@ -456,8 +456,29 @@ void ServerConfig::ensureScreen(const QString& name)
 {
     if (hasScreen(name))
         return;
+    // find an empty grid slot
     for (int i = 0; i < screens().size(); ++i) {
         if (screens()[i].isNull()) {
+            m_Screens[i].setName(name);
+            return;
+        }
+    }
+    // grid is full — expand it by adding a column
+    m_NumColumns++;
+    // insert one empty screen per row at the end of each row
+    // (the grid is stored as a flat vector: row-major)
+    std::vector<Screen> newScreens;
+    newScreens.reserve(m_NumColumns * m_NumRows);
+    int oldCols = m_NumColumns - 1;
+    for (int r = 0; r < m_NumRows; ++r) {
+        for (int c = 0; c < oldCols; ++c)
+            newScreens.push_back(m_Screens[r * oldCols + c]);
+        newScreens.push_back(Screen()); // new empty column
+    }
+    m_Screens = newScreens;
+    // now try again — there are empty slots
+    for (int i = 0; i < m_Screens.size(); ++i) {
+        if (m_Screens[i].isNull()) {
             m_Screens[i].setName(name);
             return;
         }

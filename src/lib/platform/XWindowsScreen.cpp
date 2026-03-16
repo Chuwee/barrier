@@ -525,6 +525,15 @@ XWindowsScreen::getMonitors(std::vector<MonitorGeometry>& monitors) const
 	}
 #endif
 
+	// sort monitors left-to-right, top-to-bottom to match GUI index assignment
+	if (monitors.size() > 1) {
+		std::sort(monitors.begin(), monitors.end(),
+			[](const MonitorGeometry& a, const MonitorGeometry& b) {
+				if (a.m_x != b.m_x) return a.m_x < b.m_x;
+				return a.m_y < b.m_y;
+			});
+	}
+
 	if (monitors.empty()) {
 		// fallback to single combined screen
 		IPlatformScreen::getMonitors(monitors);
