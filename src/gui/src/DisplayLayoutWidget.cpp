@@ -290,13 +290,16 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
 {
     QList<GeneratedLink> links;
 
-    // helper to add a link if not already present
+    // helper to add a link if not already present (full key match)
     auto addLink = [&links](const GeneratedLink& link) {
         for (const GeneratedLink& existing : links) {
             if (existing.srcScreen == link.srcScreen &&
                 existing.dstScreen == link.dstScreen &&
                 existing.direction == link.direction &&
-                existing.srcMonitorIndex == link.srcMonitorIndex)
+                existing.srcMonitorIndex == link.srcMonitorIndex &&
+                existing.dstMonitorIndex == link.dstMonitorIndex &&
+                existing.srcStart == link.srcStart &&
+                existing.srcEnd == link.srcEnd)
                 return;
         }
         links.append(link);

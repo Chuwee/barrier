@@ -292,6 +292,16 @@ void ServerConfig::loadSettings()
     }
     settings().endArray();
 
+    // prune stale explicit links that reference screens no longer in the config
+    if (!m_ExplicitLinks.isEmpty()) {
+        QList<ExplicitLink> valid;
+        for (const ExplicitLink& el : m_ExplicitLinks) {
+            if (hasScreen(el.srcScreen) && hasScreen(el.dstScreen))
+                valid.append(el);
+        }
+        m_ExplicitLinks = valid;
+    }
+
     settings().endGroup();
 }
 
