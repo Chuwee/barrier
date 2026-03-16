@@ -76,6 +76,7 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     // replace the grid tab with the visual display layout
     m_pDisplayLayout = new DisplayLayoutWidget();
     m_pDisplayLayout->setServerName(defaultScreenName);
+    m_pDisplayLayout->setServerConfig(&m_ServerConfig);
 
     // collect remote screen names from config
     QStringList remoteNames;

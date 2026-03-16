@@ -27,7 +27,10 @@
 
 DisplayLayoutWidget::DisplayLayoutWidget(QWidget* parent)
     : QWidget(parent)
+    , m_pServerConfig(nullptr)
     , m_dragIndex(-1)
+    , m_resizing(false)
+    , m_resizeCorner(0)
     , m_scale(1.0)
 {
     setMinimumSize(400, 250);
@@ -50,16 +53,32 @@ void DisplayLayoutWidget::setRemoteScreens(const QStringList& screenNames)
     }
 
     // add new remotes
+    bool anyRestored = false;
     for (const QString& name : screenNames) {
         DisplayRect d;
         d.name = name;
         d.monitorIndex = -1;
         d.isLocal = false;
         d.rect = QRectF(0, 0, DEFAULT_REMOTE_W, DEFAULT_REMOTE_H);
+
+        // restore saved position and size if available
+        if (m_pServerConfig && m_pServerConfig->displayPositions().contains(name)) {
+            QPointF pos = m_pServerConfig->displayPositions().value(name);
+            d.rect.moveTopLeft(pos);
+            if (m_pServerConfig->displaySizes().contains(name)) {
+                QSizeF sz = m_pServerConfig->displaySizes().value(name);
+                d.rect.setSize(QSizeF(sz.width(), sz.height()));
+            }
+            anyRestored = true;
+        }
+
         m_displays.append(d);
     }
 
-    layoutRemoteScreens();
+    // only auto-layout if no saved positions were found
+    if (!anyRestored)
+        layoutRemoteScreens();
+
     update();
 }
 
@@ -334,6 +353,15 @@ void DisplayLayoutWidget::applyToServerConfig(ServerConfig* config) const
     QList<GeneratedLink> links = computeLinks();
 
     config->clearLinkConfigs();
+    config->clearDisplayPositions();
+
+    // save remote screen positions and sizes
+    for (const DisplayRect& d : m_displays) {
+        if (!d.isLocal) {
+            config->setDisplayPosition(d.name, d.rect.topLeft());
+            config->setDisplaySize(d.name, d.rect.size());
+        }
+    }
 
     for (const GeneratedLink& link : links) {
         LinkConfig lc;
@@ -443,9 +471,25 @@ void DisplayLayoutWidget::drawDisplay(QPainter& p, const DisplayRect& d, bool se
     p.setPen(QColor(180, 180, 180, 150));
     QString tag = d.isLocal ? "local" : "remote";
     p.drawText(wr.adjusted(4, 4, -4, -4), Qt::AlignTop | Qt::AlignLeft, tag);
+
+    // resize grip for remote screens
+    if (!d.isLocal) {
+        qreal gs = 10;
+        QPointF br = wr.bottomRight();
+        p.setPen(QPen(QColor(200, 200, 200, 180), 1.5));
+        p.drawLine(br + QPointF(-gs, -2), br + QPointF(-2, -gs));
+        p.drawLine(br + QPointF(-gs + 4, -2), br + QPointF(-2, -gs + 4));
+    }
 }
 
 // --- mouse handling ---
+
+static bool isNearBottomRight(const QRectF& widgetRect, const QPointF& pos, qreal margin = 14.0)
+{
+    QPointF br = widgetRect.bottomRight();
+    return (pos.x() >= br.x() - margin && pos.x() <= br.x() + 2 &&
+            pos.y() >= br.y() - margin && pos.y() <= br.y() + 2);
+}
 
 void DisplayLayoutWidget::mousePressEvent(QMouseEvent* event)
 {
@@ -454,10 +498,18 @@ void DisplayLayoutWidget::mousePressEvent(QMouseEvent* event)
 
     int idx = hitTest(event->pos());
     if (idx >= 0 && !m_displays[idx].isLocal) {
-        m_dragIndex = idx;
-        QPointF logicalPos = toLogical(event->pos());
-        m_dragOffset = logicalPos - m_displays[idx].rect.topLeft();
-        setCursor(Qt::ClosedHandCursor);
+        QRectF wr = toWidget(m_displays[idx].rect);
+        if (isNearBottomRight(wr, event->pos())) {
+            m_dragIndex = idx;
+            m_resizing = true;
+            setCursor(Qt::SizeFDiagCursor);
+        } else {
+            m_dragIndex = idx;
+            m_resizing = false;
+            QPointF logicalPos = toLogical(event->pos());
+            m_dragOffset = logicalPos - m_displays[idx].rect.topLeft();
+            setCursor(Qt::ClosedHandCursor);
+        }
     }
 }
 
@@ -465,17 +517,33 @@ void DisplayLayoutWidget::mouseMoveEvent(QMouseEvent* event)
 {
     if (m_dragIndex >= 0) {
         QPointF logicalPos = toLogical(event->pos());
-        QPointF newTopLeft = logicalPos - m_dragOffset;
-        m_displays[m_dragIndex].rect.moveTopLeft(newTopLeft);
-        snapToEdges(m_dragIndex);
+        if (m_resizing) {
+            DisplayRect& d = m_displays[m_dragIndex];
+            qreal newW = logicalPos.x() - d.rect.left();
+            qreal newH = logicalPos.y() - d.rect.top();
+            // enforce minimum size
+            newW = qMax(newW, 400.0);
+            newH = qMax(newH, 300.0);
+            d.rect.setWidth(newW);
+            d.rect.setHeight(newH);
+        } else {
+            QPointF newTopLeft = logicalPos - m_dragOffset;
+            m_displays[m_dragIndex].rect.moveTopLeft(newTopLeft);
+            snapToEdges(m_dragIndex);
+        }
         update();
     } else {
         // hover cursor
         int idx = hitTest(event->pos());
-        if (idx >= 0 && !m_displays[idx].isLocal)
-            setCursor(Qt::OpenHandCursor);
-        else
+        if (idx >= 0 && !m_displays[idx].isLocal) {
+            QRectF wr = toWidget(m_displays[idx].rect);
+            if (isNearBottomRight(wr, event->pos()))
+                setCursor(Qt::SizeFDiagCursor);
+            else
+                setCursor(Qt::OpenHandCursor);
+        } else {
             setCursor(Qt::ArrowCursor);
+        }
     }
 }
 
@@ -483,6 +551,7 @@ void DisplayLayoutWidget::mouseReleaseEvent(QMouseEvent* event)
 {
     if (m_dragIndex >= 0) {
         m_dragIndex = -1;
+        m_resizing = false;
         setCursor(Qt::ArrowCursor);
         emit layoutChanged();
         update();

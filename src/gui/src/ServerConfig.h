@@ -22,6 +22,8 @@
 
 #include <QList>
 #include <QMap>
+#include <QPointF>
+#include <QSizeF>
 
 #include "Screen.h"
 #include "BaseConfig.h"
@@ -71,6 +73,12 @@ class ServerConfig : public BaseConfig
         void setLinkConfig(const QString& screenName, const QString& direction,
                            const LinkConfig& config);
         void clearLinkConfigs() { m_LinkConfigs.clear(); }
+
+        const QMap<QString, QPointF>& displayPositions() const { return m_DisplayPositions; }
+        void setDisplayPosition(const QString& name, const QPointF& pos) { m_DisplayPositions[name] = pos; }
+        const QMap<QString, QSizeF>& displaySizes() const { return m_DisplaySizes; }
+        void setDisplaySize(const QString& name, const QSizeF& sz) { m_DisplaySizes[name] = sz; }
+        void clearDisplayPositions() { m_DisplayPositions.clear(); m_DisplaySizes.clear(); }
 
         void saveSettings();
         void loadSettings();
@@ -135,6 +143,8 @@ class ServerConfig : public BaseConfig
         bool m_ClipboardSharing;
         MainWindow* m_pMainWindow;
         QMap<QString, LinkConfig> m_LinkConfigs;
+        QMap<QString, QPointF> m_DisplayPositions;
+        QMap<QString, QSizeF> m_DisplaySizes;
 };
 
 QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config);

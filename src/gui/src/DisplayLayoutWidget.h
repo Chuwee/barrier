@@ -58,6 +58,7 @@ public:
     DisplayLayoutWidget(QWidget* parent = nullptr);
 
     void setServerName(const QString& name);
+    void setServerConfig(ServerConfig* config) { m_pServerConfig = config; }
     void setRemoteScreens(const QStringList& screenNames);
 
     QList<GeneratedLink> computeLinks() const;
@@ -91,11 +92,14 @@ private:
     void drawDisplay(QPainter& p, const DisplayRect& d, bool selected) const;
 
     QString m_serverName;
+    ServerConfig* m_pServerConfig;
     QVector<DisplayRect> m_displays;
 
-    // drag state
+    // drag/resize state
     int m_dragIndex;
     QPointF m_dragOffset;   // offset in logical coords
+    bool m_resizing;        // true if resizing instead of moving
+    int m_resizeCorner;     // 0=none, 1=bottomRight
 
     // view transform
     qreal m_scale;

@@ -155,6 +155,23 @@ void ServerConfig::saveSettings()
     }
     settings().endArray();
 
+    settings().beginWriteArray("displayPositions");
+    {
+        int idx = 0;
+        for (auto it = m_DisplayPositions.constBegin(); it != m_DisplayPositions.constEnd(); ++it, ++idx)
+        {
+            settings().setArrayIndex(idx);
+            settings().setValue("name", it.key());
+            settings().setValue("x", it.value().x());
+            settings().setValue("y", it.value().y());
+            if (m_DisplaySizes.contains(it.key())) {
+                settings().setValue("w", m_DisplaySizes[it.key()].width());
+                settings().setValue("h", m_DisplaySizes[it.key()].height());
+            }
+        }
+    }
+    settings().endArray();
+
     settings().endGroup();
 }
 
@@ -219,6 +236,23 @@ void ServerConfig::loadSettings()
         lc.srcMonitorIndex = settings().value("srcMonitorIndex", -1).toInt();
         if (!lc.isDefault())
             m_LinkConfigs[key] = lc;
+    }
+    settings().endArray();
+
+    int numDisplayPos = settings().beginReadArray("displayPositions");
+    m_DisplayPositions.clear();
+    m_DisplaySizes.clear();
+    for (int i = 0; i < numDisplayPos; i++)
+    {
+        settings().setArrayIndex(i);
+        QString name = settings().value("name").toString();
+        qreal x = settings().value("x", 0).toDouble();
+        qreal y = settings().value("y", 0).toDouble();
+        m_DisplayPositions[name] = QPointF(x, y);
+        qreal w = settings().value("w", 0).toDouble();
+        qreal h = settings().value("h", 0).toDouble();
+        if (w > 0 && h > 0)
+            m_DisplaySizes[name] = QSizeF(w, h);
     }
     settings().endArray();
 
