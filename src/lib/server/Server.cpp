@@ -773,7 +773,18 @@ Server::getNeighborFromMonitor(BaseClientProxy* src,
 		mapToPixelOnMonitor(index->second, dir, tOut, dstMonitorIndex, x, y);
 	}
 	else {
+		// mapToPixel only sets the perpendicular coordinate.
+		// we must also set the entry edge coordinate.
 		mapToPixel(index->second, dir, tOut, x, y);
+		SInt32 dx, dy, dw, dh;
+		index->second->getShape(dx, dy, dw, dh);
+		switch (dir) {
+		case kLeft:  x = dx + dw - 1; break;  // enter from right
+		case kRight: x = dx;           break;  // enter from left
+		case kTop:   y = dy + dh - 1;  break;  // enter from bottom
+		case kBottom:y = dy;            break;  // enter from top
+		default: break;
+		}
 	}
 
 	avoidJumpZone(index->second, dir, x, y);
