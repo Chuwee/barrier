@@ -598,25 +598,31 @@ Server::mapToPixelOnMonitor(BaseClientProxy* client,
 		return;
 	}
 
+	// dir is the direction of travel. The cursor enters the destination
+	// from the opposite side: traveling right → enter from left edge, etc.
 	const MonitorGeometry& mg = monitors[monitorIndex];
 	switch (dir) {
 	case kLeft:
-		x = mg.m_x;
-		y = static_cast<SInt32>(f * mg.m_h) + mg.m_y;
-		break;
-
-	case kRight:
+		// traveling left → enter from right edge of target monitor
 		x = mg.m_x + mg.m_w - 1;
 		y = static_cast<SInt32>(f * mg.m_h) + mg.m_y;
 		break;
 
+	case kRight:
+		// traveling right → enter from left edge of target monitor
+		x = mg.m_x;
+		y = static_cast<SInt32>(f * mg.m_h) + mg.m_y;
+		break;
+
 	case kTop:
-		y = mg.m_y;
+		// traveling up → enter from bottom edge of target monitor
+		y = mg.m_y + mg.m_h - 1;
 		x = static_cast<SInt32>(f * mg.m_w) + mg.m_x;
 		break;
 
 	case kBottom:
-		y = mg.m_y + mg.m_h - 1;
+		// traveling down → enter from top edge of target monitor
+		y = mg.m_y;
 		x = static_cast<SInt32>(f * mg.m_w) + mg.m_x;
 		break;
 
