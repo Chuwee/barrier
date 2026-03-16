@@ -2362,7 +2362,8 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 		// warp cursor if it moved.
 		if (m_x != xOld || m_y != yOld) {
 			LOG((CLOG_DEBUG2 "move on %s to %d,%d", getName(m_active).c_str(), m_x, m_y));
-			if (m_udpMouseEnabled && m_active != m_primaryClient) {
+			if (m_udpMouseEnabled && m_active != m_primaryClient &&
+					m_udpClients.count(getName(m_active)) > 0) {
 				// send relative delta via UDP (low latency)
 				sendUdpDatagram(0x01, dx, dy);
 				// periodically send absolute sync to correct drift
@@ -2372,6 +2373,7 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 				}
 			}
 			else {
+				// TCP fallback (UDP not ready or not enabled)
 				m_active->mouseMove(m_x, m_y);
 			}
 		}

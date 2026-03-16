@@ -137,4 +137,6 @@ private:
     // UDP mouse channel
     UDPSocket*            m_udpSocket;
     UInt32                m_udpLastSeqNum;
+    EventQueueTimer*    m_udpPollTimer;
+    void                handleUdpPollTimer(const Event&, void*);
 };

@@ -57,7 +57,8 @@ ServerProxy::ServerProxy(Client* client, barrier::IStream* stream, IEventQueue* 
     m_parser(&ServerProxy::parseHandshakeMessage),
     m_events(events),
     m_udpSocket(NULL),
-    m_udpLastSeqNum(0)
+    m_udpLastSeqNum(0),
+    m_udpPollTimer(NULL)
 {
     assert(m_client != NULL);
     assert(m_stream != NULL);
@@ -88,6 +89,11 @@ ServerProxy::~ServerProxy()
                             m_stream->getEventTarget());
     m_events->removeHandler(m_events->forClipboard().clipboardSending(), this);
 
+    if (m_udpPollTimer != NULL) {
+        m_events->removeHandler(Event::kTimer, m_udpPollTimer);
+        m_events->deleteTimer(m_udpPollTimer);
+        m_udpPollTimer = NULL;
+    }
     delete m_udpSocket;
     m_udpSocket = NULL;
 }
@@ -976,6 +982,13 @@ ServerProxy::udpPort()
 	std::memcpy(&hello[6], name.c_str(), name.size());
 	m_udpSocket->send(&hello[0], (int)hello.size());
 
+	// start a 1ms poll timer so UDP datagrams are read promptly
+	// even when no TCP traffic is flowing
+	m_udpPollTimer = m_events->newTimer(0.001, NULL);
+	m_events->adoptHandler(Event::kTimer, m_udpPollTimer,
+		new TMethodEventJob<ServerProxy>(this,
+			&ServerProxy::handleUdpPollTimer));
+
 	LOG((CLOG_NOTE "UDP mouse channel active to %s:%d",
 		 serverAddr.c_str(), port));
 }
@@ -997,16 +1010,25 @@ ServerProxy::pollUdp()
 		SInt32 b = ((SInt32)buf[10] << 24) | ((SInt32)buf[11] << 16) |
 				   ((SInt32)buf[12] << 8)  | (SInt32)buf[13];
 
+		// discard duplicate packets (seq already seen)
+		if (seq <= m_udpLastSeqNum) {
+			continue;
+		}
+		m_udpLastSeqNum = seq;
+
 		if (type == 0x01) {
-			// relative delta — always apply (commutative, order doesn't matter)
+			// relative delta — order doesn't matter (commutative)
 			m_client->mouseRelativeMove(a, b);
 		}
 		else if (type == 0x02) {
-			// absolute sync — discard if stale
-			if (seq > m_udpLastSeqNum) {
-				m_udpLastSeqNum = seq;
-				m_client->mouseMove(a, b);
-			}
+			// absolute sync
+			m_client->mouseMove(a, b);
 		}
 	}
+}
+
+void
+ServerProxy::handleUdpPollTimer(const Event&, void*)
+{
+	pollUdp();
 }

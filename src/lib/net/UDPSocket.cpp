@@ -130,11 +130,20 @@ UDPSocket::setTarget(const char* host, UInt16 port)
     m_target.sin_family = AF_INET;
     m_target.sin_port   = htons(port);
 
-    // try as numeric address first
+    // try as numeric address first, fall back to DNS resolution
     if (inet_pton(AF_INET, host, &m_target.sin_addr) != 1) {
-        LOG((CLOG_ERR "invalid UDP target address: %s", host));
-        m_hasTarget = false;
-        return false;
+        struct addrinfo hints, *res = NULL;
+        std::memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        if (getaddrinfo(host, NULL, &hints, &res) != 0 || res == NULL) {
+            LOG((CLOG_ERR "failed to resolve UDP target: %s", host));
+            m_hasTarget = false;
+            return false;
+        }
+        m_target.sin_addr =
+            reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr;
+        freeaddrinfo(res);
     }
 
     m_hasTarget = true;
