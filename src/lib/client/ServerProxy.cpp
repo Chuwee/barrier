@@ -957,7 +957,12 @@ ServerProxy::udpPort()
 	ProtocolUtil::readf(m_stream, kMsgDUdpPort + 4, &port);
 	LOG((CLOG_DEBUG "server announced UDP mouse port %d", port));
 
-	// create UDP socket and set target to server's address
+	// clean up any existing UDP state from a prior announcement
+	if (m_udpPollTimer != NULL) {
+		m_events->removeHandler(Event::kTimer, m_udpPollTimer);
+		m_events->deleteTimer(m_udpPollTimer);
+		m_udpPollTimer = NULL;
+	}
 	delete m_udpSocket;
 	m_udpSocket = new UDPSocket();
 	m_udpLastSeqNum = 0;
