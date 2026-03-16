@@ -291,8 +291,7 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
     QList<GeneratedLink> links;
 
     for (int i = 0; i < m_displays.size(); ++i) {
-        for (int j = 0; j < m_displays.size(); ++j) {
-            if (i == j) continue;
+        for (int j = i + 1; j < m_displays.size(); ++j) {
 
             const DisplayRect& a = m_displays[i];
             const DisplayRect& b = m_displays[j];
@@ -301,45 +300,65 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
             if (a.isLocal && b.isLocal && a.name == b.name)
                 continue;
 
-            // right edge of a touching left edge of b
+            // right edge of a touching left edge of b → a:right=b, b:left=a
             if (std::abs(a.rect.right() - b.rect.left()) < ADJ_DIST) {
                 qreal overlapTop = qMax(a.rect.top(), b.rect.top());
                 qreal overlapBot = qMin(a.rect.bottom(), b.rect.bottom());
                 if (overlapBot - overlapTop > 10) {
-                    GeneratedLink link;
-                    link.srcScreen = a.name;
-                    link.dstScreen = b.name;
-                    link.direction = "right";
-                    link.srcMonitorIndex = a.isLocal ? a.monitorIndex : -1;
-                    link.dstMonitorIndex = b.isLocal ? b.monitorIndex : -1;
+                    GeneratedLink fwd;
+                    fwd.srcScreen = a.name;
+                    fwd.dstScreen = b.name;
+                    fwd.direction = "right";
+                    fwd.srcMonitorIndex = a.isLocal ? a.monitorIndex : -1;
+                    fwd.dstMonitorIndex = b.isLocal ? b.monitorIndex : -1;
+                    fwd.srcStart = qRound((overlapTop - a.rect.top()) / a.rect.height() * 100);
+                    fwd.srcEnd   = qRound((overlapBot - a.rect.top()) / a.rect.height() * 100);
+                    fwd.dstStart = qRound((overlapTop - b.rect.top()) / b.rect.height() * 100);
+                    fwd.dstEnd   = qRound((overlapBot - b.rect.top()) / b.rect.height() * 100);
+                    links.append(fwd);
 
-                    link.srcStart = qRound((overlapTop - a.rect.top()) / a.rect.height() * 100);
-                    link.srcEnd   = qRound((overlapBot - a.rect.top()) / a.rect.height() * 100);
-                    link.dstStart = qRound((overlapTop - b.rect.top()) / b.rect.height() * 100);
-                    link.dstEnd   = qRound((overlapBot - b.rect.top()) / b.rect.height() * 100);
-
-                    links.append(link);
+                    GeneratedLink rev;
+                    rev.srcScreen = b.name;
+                    rev.dstScreen = a.name;
+                    rev.direction = "left";
+                    rev.srcMonitorIndex = b.isLocal ? b.monitorIndex : -1;
+                    rev.dstMonitorIndex = a.isLocal ? a.monitorIndex : -1;
+                    rev.srcStart = fwd.dstStart;
+                    rev.srcEnd   = fwd.dstEnd;
+                    rev.dstStart = fwd.srcStart;
+                    rev.dstEnd   = fwd.srcEnd;
+                    links.append(rev);
                 }
             }
 
-            // bottom edge of a touching top edge of b
+            // bottom edge of a touching top edge of b → a:down=b, b:up=a
             if (std::abs(a.rect.bottom() - b.rect.top()) < ADJ_DIST) {
                 qreal overlapLeft  = qMax(a.rect.left(), b.rect.left());
                 qreal overlapRight = qMin(a.rect.right(), b.rect.right());
                 if (overlapRight - overlapLeft > 10) {
-                    GeneratedLink link;
-                    link.srcScreen = a.name;
-                    link.dstScreen = b.name;
-                    link.direction = "down";
-                    link.srcMonitorIndex = a.isLocal ? a.monitorIndex : -1;
-                    link.dstMonitorIndex = b.isLocal ? b.monitorIndex : -1;
+                    GeneratedLink fwd;
+                    fwd.srcScreen = a.name;
+                    fwd.dstScreen = b.name;
+                    fwd.direction = "down";
+                    fwd.srcMonitorIndex = a.isLocal ? a.monitorIndex : -1;
+                    fwd.dstMonitorIndex = b.isLocal ? b.monitorIndex : -1;
+                    fwd.srcStart = qRound((overlapLeft - a.rect.left()) / a.rect.width() * 100);
+                    fwd.srcEnd   = qRound((overlapRight - a.rect.left()) / a.rect.width() * 100);
+                    fwd.dstStart = qRound((overlapLeft - b.rect.left()) / b.rect.width() * 100);
+                    fwd.dstEnd   = qRound((overlapRight - b.rect.left()) / b.rect.width() * 100);
+                    links.append(fwd);
 
-                    link.srcStart = qRound((overlapLeft - a.rect.left()) / a.rect.width() * 100);
-                    link.srcEnd   = qRound((overlapRight - a.rect.left()) / a.rect.width() * 100);
-                    link.dstStart = qRound((overlapLeft - b.rect.left()) / b.rect.width() * 100);
-                    link.dstEnd   = qRound((overlapRight - b.rect.left()) / b.rect.width() * 100);
-
-                    links.append(link);
+                    GeneratedLink rev;
+                    rev.srcScreen = b.name;
+                    rev.dstScreen = a.name;
+                    rev.direction = "up";
+                    rev.srcMonitorIndex = b.isLocal ? b.monitorIndex : -1;
+                    rev.dstMonitorIndex = a.isLocal ? a.monitorIndex : -1;
+                    rev.srcStart = fwd.dstStart;
+                    rev.srcEnd   = fwd.dstEnd;
+                    rev.dstStart = fwd.srcStart;
+                    rev.dstEnd   = fwd.srcEnd;
+                    links.append(rev);
                 }
             }
         }
@@ -363,6 +382,11 @@ void DisplayLayoutWidget::applyToServerConfig(ServerConfig* config) const
             config->setDisplaySize(d.name, d.rect.size());
         }
     }
+
+    // ensure all screens referenced in the layout exist in the screens list
+    // (needed for the screens section output in the config file)
+    for (const DisplayRect& d : m_displays)
+        config->ensureScreen(d.name);
 
     for (const GeneratedLink& link : links) {
         LinkConfig lc;

@@ -443,6 +443,27 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
     return outStream;
 }
 
+bool ServerConfig::hasScreen(const QString& name) const
+{
+    for (const Screen& s : screens()) {
+        if (!s.isNull() && s.name() == name)
+            return true;
+    }
+    return false;
+}
+
+void ServerConfig::ensureScreen(const QString& name)
+{
+    if (hasScreen(name))
+        return;
+    for (int i = 0; i < screens().size(); ++i) {
+        if (screens()[i].isNull()) {
+            m_Screens[i].setName(name);
+            return;
+        }
+    }
+}
+
 LinkConfig ServerConfig::linkConfig(const QString& screenName, const QString& direction) const
 {
     QString key = linkConfigKey(screenName, direction);

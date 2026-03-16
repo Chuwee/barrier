@@ -74,6 +74,9 @@ class ServerConfig : public BaseConfig
                            const LinkConfig& config);
         void clearLinkConfigs() { m_LinkConfigs.clear(); }
 
+        bool hasScreen(const QString& name) const;
+        void ensureScreen(const QString& name);
+
         struct ExplicitLink {
             QString srcScreen;
             QString dstScreen;

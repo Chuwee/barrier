@@ -765,7 +765,15 @@ Config::generateReverseMappings()
 				continue;
 			}
 
-			CellEdge revSrc(reverseDir, dstEdge.getInterval());
+			// if the forward destination targets a specific monitor,
+			// the reverse source should originate from that monitor
+			CellEdge revSrc = (dstEdge.getMonitorIndex() >= 0)
+				? CellEdge(reverseDir, dstEdge.getInterval(),
+							dstEdge.getMonitorIndex())
+				: CellEdge(reverseDir, dstEdge.getInterval());
+
+			// if the forward source is from a specific monitor,
+			// the reverse destination should target that monitor
 			CellEdge revDst = (srcEdge.getSrcMonitorIndex() >= 0)
 				? CellEdge(srcScreenName, reverseDir,
 							srcEdge.getInterval(),
