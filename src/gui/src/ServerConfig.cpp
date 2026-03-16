@@ -155,6 +155,23 @@ void ServerConfig::saveSettings()
     }
     settings().endArray();
 
+    settings().beginWriteArray("explicitLinks");
+    for (int i = 0; i < m_ExplicitLinks.size(); i++)
+    {
+        settings().setArrayIndex(i);
+        const ExplicitLink& el = m_ExplicitLinks[i];
+        settings().setValue("srcScreen", el.srcScreen);
+        settings().setValue("dstScreen", el.dstScreen);
+        settings().setValue("direction", el.direction);
+        settings().setValue("srcStart", el.config.srcStart);
+        settings().setValue("srcEnd", el.config.srcEnd);
+        settings().setValue("dstStart", el.config.dstStart);
+        settings().setValue("dstEnd", el.config.dstEnd);
+        settings().setValue("monitorIndex", el.config.monitorIndex);
+        settings().setValue("srcMonitorIndex", el.config.srcMonitorIndex);
+    }
+    settings().endArray();
+
     settings().beginWriteArray("displayPositions");
     {
         int idx = 0;
@@ -239,6 +256,25 @@ void ServerConfig::loadSettings()
     }
     settings().endArray();
 
+    int numExplicitLinks = settings().beginReadArray("explicitLinks");
+    m_ExplicitLinks.clear();
+    for (int i = 0; i < numExplicitLinks; i++)
+    {
+        settings().setArrayIndex(i);
+        ExplicitLink el;
+        el.srcScreen = settings().value("srcScreen").toString();
+        el.dstScreen = settings().value("dstScreen").toString();
+        el.direction = settings().value("direction").toString();
+        el.config.srcStart = settings().value("srcStart", 0).toInt();
+        el.config.srcEnd = settings().value("srcEnd", 100).toInt();
+        el.config.dstStart = settings().value("dstStart", 0).toInt();
+        el.config.dstEnd = settings().value("dstEnd", 100).toInt();
+        el.config.monitorIndex = settings().value("monitorIndex", -1).toInt();
+        el.config.srcMonitorIndex = settings().value("srcMonitorIndex", -1).toInt();
+        m_ExplicitLinks.append(el);
+    }
+    settings().endArray();
+
     int numDisplayPos = settings().beginReadArray("displayPositions");
     m_DisplayPositions.clear();
     m_DisplaySizes.clear();
@@ -299,55 +335,75 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
 
     outStream << "section: links" << endl;
 
-    for (int i = 0; i < config.screens().size(); i++)
-        if (!config.screens()[i].isNull())
-        {
-            // collect links grouped by srcMonitorIndex
-            // -1 = whole screen, 0+ = specific monitor
-            QMap<int, QList<int>> monitorGroups; // srcMonitorIndex -> list of direction indices
+    if (!config.explicitLinks().isEmpty())
+    {
+        // use explicit links from visual display layout
+        // group by (srcScreen, srcMonitorIndex)
+        struct GroupKey {
+            QString screen;
+            int srcMonitorIndex;
+            bool operator<(const GroupKey& o) const {
+                if (screen != o.screen) return screen < o.screen;
+                return srcMonitorIndex < o.srcMonitorIndex;
+            }
+        };
+        QMap<GroupKey, QList<const ServerConfig::ExplicitLink*>> groups;
+        for (const ServerConfig::ExplicitLink& el : config.explicitLinks()) {
+            GroupKey key = { el.srcScreen, el.config.srcMonitorIndex };
+            groups[key].append(&el);
+        }
 
-            for (unsigned int j = 0; j < sizeof(neighbourDirs) / sizeof(neighbourDirs[0]); j++)
-            {
-                int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
-                if (idx != -1 && !config.screens()[idx].isNull())
-                {
-                    LinkConfig lc = config.linkConfig(
-                        config.screens()[i].name(),
-                        QString(neighbourDirs[j].name));
-                    monitorGroups[lc.srcMonitorIndex].append(j);
-                }
+        for (auto it = groups.constBegin(); it != groups.constEnd(); ++it) {
+            if (it.key().srcMonitorIndex < 0) {
+                outStream << "\t" << it.key().screen << ":" << endl;
+            } else {
+                outStream << "\t" << it.key().screen << "@" << it.key().srcMonitorIndex << ":" << endl;
             }
 
-            for (auto it = monitorGroups.constBegin(); it != monitorGroups.constEnd(); ++it)
-            {
-                if (it.key() < 0) {
-                    outStream << "\t" << config.screens()[i].name() << ":" << endl;
-                } else {
-                    outStream << "\t" << config.screens()[i].name() << "@" << it.key() << ":" << endl;
-                }
-
-                for (int j : it.value())
-                {
-                    int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
-                    LinkConfig lc = config.linkConfig(
-                        config.screens()[i].name(),
-                        QString(neighbourDirs[j].name));
-
-                    // write direction with optional source interval
-                    outStream << "\t\t" << neighbourDirs[j].name;
-                    if (lc.srcStart != 0 || lc.srcEnd != 100)
-                        outStream << "(" << lc.srcStart << "," << lc.srcEnd << ")";
-
-                    // write destination screen with optional @monitor and interval
-                    outStream << " = " << config.screens()[idx].name();
-                    if (lc.monitorIndex >= 0)
-                        outStream << "@" << lc.monitorIndex;
-                    if (lc.dstStart != 0 || lc.dstEnd != 100)
-                        outStream << "(" << lc.dstStart << "," << lc.dstEnd << ")";
-                    outStream << endl;
-                }
+            for (const ServerConfig::ExplicitLink* el : it.value()) {
+                const LinkConfig& lc = el->config;
+                outStream << "\t\t" << el->direction;
+                if (lc.srcStart != 0 || lc.srcEnd != 100)
+                    outStream << "(" << lc.srcStart << "," << lc.srcEnd << ")";
+                outStream << " = " << el->dstScreen;
+                if (lc.monitorIndex >= 0)
+                    outStream << "@" << lc.monitorIndex;
+                if (lc.dstStart != 0 || lc.dstEnd != 100)
+                    outStream << "(" << lc.dstStart << "," << lc.dstEnd << ")";
+                outStream << endl;
             }
         }
+    }
+    else
+    {
+        // fallback: grid-based links
+        for (int i = 0; i < config.screens().size(); i++)
+            if (!config.screens()[i].isNull())
+            {
+                outStream << "\t" << config.screens()[i].name() << ":" << endl;
+
+                for (unsigned int j = 0; j < sizeof(neighbourDirs) / sizeof(neighbourDirs[0]); j++)
+                {
+                    int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
+                    if (idx != -1 && !config.screens()[idx].isNull())
+                    {
+                        LinkConfig lc = config.linkConfig(
+                            config.screens()[i].name(),
+                            QString(neighbourDirs[j].name));
+
+                        outStream << "\t\t" << neighbourDirs[j].name;
+                        if (lc.srcStart != 0 || lc.srcEnd != 100)
+                            outStream << "(" << lc.srcStart << "," << lc.srcEnd << ")";
+                        outStream << " = " << config.screens()[idx].name();
+                        if (lc.monitorIndex >= 0)
+                            outStream << "@" << lc.monitorIndex;
+                        if (lc.dstStart != 0 || lc.dstEnd != 100)
+                            outStream << "(" << lc.dstStart << "," << lc.dstEnd << ")";
+                        outStream << endl;
+                    }
+                }
+            }
+    }
 
     outStream << "end" << endl << endl;
 

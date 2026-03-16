@@ -353,6 +353,7 @@ void DisplayLayoutWidget::applyToServerConfig(ServerConfig* config) const
     QList<GeneratedLink> links = computeLinks();
 
     config->clearLinkConfigs();
+    config->clearExplicitLinks();
     config->clearDisplayPositions();
 
     // save remote screen positions and sizes
@@ -373,6 +374,13 @@ void DisplayLayoutWidget::applyToServerConfig(ServerConfig* config) const
         lc.srcMonitorIndex = link.srcMonitorIndex;
 
         config->setLinkConfig(link.srcScreen, link.direction, lc);
+
+        ServerConfig::ExplicitLink el;
+        el.srcScreen = link.srcScreen;
+        el.dstScreen = link.dstScreen;
+        el.direction = link.direction;
+        el.config = lc;
+        config->addExplicitLink(el);
     }
 }
 

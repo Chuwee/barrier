@@ -74,6 +74,16 @@ class ServerConfig : public BaseConfig
                            const LinkConfig& config);
         void clearLinkConfigs() { m_LinkConfigs.clear(); }
 
+        struct ExplicitLink {
+            QString srcScreen;
+            QString dstScreen;
+            QString direction;
+            LinkConfig config;
+        };
+        const QList<ExplicitLink>& explicitLinks() const { return m_ExplicitLinks; }
+        void clearExplicitLinks() { m_ExplicitLinks.clear(); }
+        void addExplicitLink(const ExplicitLink& link) { m_ExplicitLinks.append(link); }
+
         const QMap<QString, QPointF>& displayPositions() const { return m_DisplayPositions; }
         void setDisplayPosition(const QString& name, const QPointF& pos) { m_DisplayPositions[name] = pos; }
         const QMap<QString, QSizeF>& displaySizes() const { return m_DisplaySizes; }
@@ -143,6 +153,7 @@ class ServerConfig : public BaseConfig
         bool m_ClipboardSharing;
         MainWindow* m_pMainWindow;
         QMap<QString, LinkConfig> m_LinkConfigs;
+        QList<ExplicitLink> m_ExplicitLinks;
         QMap<QString, QPointF> m_DisplayPositions;
         QMap<QString, QSizeF> m_DisplaySizes;
 };
