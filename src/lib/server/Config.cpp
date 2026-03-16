@@ -741,6 +741,8 @@ Config::generateReverseMappings()
 		std::string    dstScreenName;
 		CellEdge    reverseSrc;
 		CellEdge    reverseDst;
+		ReverseMapping(const std::string& dst, const CellEdge& src, const CellEdge& d)
+			: dstScreenName(dst), reverseSrc(src), reverseDst(d) {}
 	};
 	std::vector<ReverseMapping> reversals;
 
@@ -763,22 +765,14 @@ Config::generateReverseMappings()
 				continue;
 			}
 
-			ReverseMapping rm;
-			rm.dstScreenName = dstCanonical;
-			rm.reverseSrc = CellEdge(reverseDir, dstEdge.getInterval());
-
-			// if the forward link has a source monitor index, use it
-			// as the destination monitor index on the reverse link
-			if (srcEdge.getSrcMonitorIndex() >= 0) {
-				rm.reverseDst = CellEdge(srcScreenName, reverseDir,
-										srcEdge.getInterval(),
-										srcEdge.getSrcMonitorIndex());
-			}
-			else {
-				rm.reverseDst = CellEdge(srcScreenName, reverseDir,
-										srcEdge.getInterval());
-			}
-			reversals.push_back(rm);
+			CellEdge revSrc(reverseDir, dstEdge.getInterval());
+			CellEdge revDst = (srcEdge.getSrcMonitorIndex() >= 0)
+				? CellEdge(srcScreenName, reverseDir,
+							srcEdge.getInterval(),
+							srcEdge.getSrcMonitorIndex())
+				: CellEdge(srcScreenName, reverseDir,
+							srcEdge.getInterval());
+			reversals.push_back(ReverseMapping(dstCanonical, revSrc, revDst));
 		}
 	}
 
