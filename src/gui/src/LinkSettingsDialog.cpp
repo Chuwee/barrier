@@ -20,9 +20,46 @@
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QLabel>
+#include <QScreen>
 #include <QSpinBox>
 #include <QVBoxLayout>
+
+static QString buildMonitorInfoText()
+{
+    QList<QScreen*> screens = QGuiApplication::screens();
+    if (screens.isEmpty())
+        return QString();
+
+    // sort screens by x position (left to right) for intuitive ordering
+    QList<QScreen*> sorted = screens;
+    std::sort(sorted.begin(), sorted.end(), [](QScreen* a, QScreen* b) {
+        if (a->geometry().x() != b->geometry().x())
+            return a->geometry().x() < b->geometry().x();
+        return a->geometry().y() < b->geometry().y();
+    });
+
+    QString text;
+    text += QString("This machine has %1 display(s):\n").arg(sorted.size());
+    for (int i = 0; i < sorted.size(); ++i) {
+        QScreen* s = sorted[i];
+        QRect g = s->geometry();
+        QString position;
+        if (i == 0 && sorted.size() > 1)
+            position = " (leftmost)";
+        else if (i == sorted.size() - 1 && sorted.size() > 1)
+            position = " (rightmost)";
+
+        text += QString("  Monitor %1: %2x%3 at (%4,%5)%6\n")
+            .arg(i)
+            .arg(g.width()).arg(g.height())
+            .arg(g.x()).arg(g.y())
+            .arg(position);
+    }
+
+    return text;
+}
 
 LinkSettingsDialog::LinkSettingsDialog(QWidget* parent, const QString& srcScreen,
                                        const QString& dstScreen,
@@ -34,6 +71,18 @@ LinkSettingsDialog::LinkSettingsDialog(QWidget* parent, const QString& srcScreen
                    .arg(srcScreen, direction, dstScreen));
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
+
+    // Detected monitors info
+    QString monitorInfo = buildMonitorInfoText();
+    if (!monitorInfo.isEmpty()) {
+        QGroupBox* monInfoGroup = new QGroupBox(tr("Detected monitors (this machine)"));
+        QVBoxLayout* monInfoLayout = new QVBoxLayout(monInfoGroup);
+        QLabel* monInfoLabel = new QLabel(monitorInfo);
+        monInfoLabel->setFont(QFont("Menlo, Courier, monospace", 11));
+        monInfoLabel->setWordWrap(true);
+        monInfoLayout->addWidget(monInfoLabel);
+        mainLayout->addWidget(monInfoGroup);
+    }
 
     // Source edge group
     QGroupBox* srcGroup = new QGroupBox(
@@ -96,8 +145,7 @@ LinkSettingsDialog::LinkSettingsDialog(QWidget* parent, const QString& srcScreen
     QLabel* helpLabel = new QLabel(tr(
         "Intervals are percentages (0-100) of the screen edge, "
         "measured from top-left.\n"
-        "Example: 0-60 maps the top 60%% of the edge.\n"
-        "Target monitor -1 means the whole screen (default)."));
+        "Monitor indices match the order shown above (left to right)."));
     helpLabel->setWordWrap(true);
     mainLayout->addWidget(helpLabel);
 
@@ -109,7 +157,7 @@ LinkSettingsDialog::LinkSettingsDialog(QWidget* parent, const QString& srcScreen
     mainLayout->addWidget(buttons);
 
     setLayout(mainLayout);
-    resize(350, 450);
+    resize(400, 550);
 }
 
 LinkConfig LinkSettingsDialog::linkConfig() const
