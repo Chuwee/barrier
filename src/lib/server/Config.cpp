@@ -923,6 +923,9 @@ Config::readSectionOptions(ConfigReadContext& s)
 		else if (name == "udpMouse") {
 			addOption("", kOptionUdpMouseChannel, s.parseBoolean(value));
 		}
+		else if (name == "udpSyncMs") {
+			addOption("", kOptionUdpSyncMs, s.parseInt(value));
+		}
 
 		else {
 			handled = false;
@@ -1590,6 +1593,9 @@ Config::getOptionName(OptionID id)
 	if (id == kOptionUdpMouseChannel) {
 		return "udpMouse";
 	}
+	if (id == kOptionUdpSyncMs) {
+		return "udpSyncMs";
+	}
 	return NULL;
 }
 
@@ -1642,7 +1648,8 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
 	if (id == kOptionHeartbeat ||
 		id == kOptionScreenSwitchCornerSize ||
 		id == kOptionScreenSwitchDelay ||
-		id == kOptionScreenSwitchTwoTap) {
+		id == kOptionScreenSwitchTwoTap ||
+		id == kOptionUdpSyncMs) {
 		return barrier::string::sprintf("%d", value);
 	}
 	if (id == kOptionScreenSwitchCorners) {

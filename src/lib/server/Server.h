@@ -507,6 +507,7 @@ private:
     UDPSocket*            m_udpSocket;
     bool                m_udpMouseEnabled;
     UInt32                m_udpSeqNum;
+    double                m_udpSyncInterval;  // seconds, 0 = disabled
     Stopwatch            m_udpSyncTimer;
     typedef std::map<std::string, struct sockaddr_in> UdpClientMap;
     UdpClientMap        m_udpClients;

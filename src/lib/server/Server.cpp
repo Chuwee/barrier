@@ -98,7 +98,8 @@ Server::Server(
 	m_args(args),
 	m_udpSocket(NULL),
 	m_udpMouseEnabled(false),
-	m_udpSeqNum(0)
+	m_udpSeqNum(0),
+	m_udpSyncInterval(0.5)
 {
 	// must have a primary client and it must have a canonical name
 	assert(m_primaryClient != NULL);
@@ -1472,6 +1473,12 @@ Server::processOptions()
 				m_udpClients.clear();
 			}
 		}
+		else if (id == kOptionUdpSyncMs) {
+			m_udpSyncInterval = value * 0.001;
+			if (m_udpSyncInterval < 0.0) m_udpSyncInterval = 0.0;
+			LOG((CLOG_DEBUG "UDP sync interval set to %.0f ms",
+				 m_udpSyncInterval * 1000.0));
+		}
 	}
 	if (m_relativeMoves && !newRelativeMoves) {
 		stopRelativeMoves();
@@ -2367,7 +2374,8 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 				// send relative delta via UDP (low latency)
 				sendUdpDatagram(0x01, dx, dy);
 				// periodically send absolute sync to correct drift
-				if (m_udpSyncTimer.getTime() >= 0.1) {
+				if (m_udpSyncInterval > 0.0 &&
+					m_udpSyncTimer.getTime() >= m_udpSyncInterval) {
 					sendUdpDatagram(0x02, m_x, m_y);
 					m_udpSyncTimer.reset();
 				}

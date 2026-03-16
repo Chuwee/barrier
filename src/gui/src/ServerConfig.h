@@ -123,6 +123,8 @@ class ServerConfig : public BaseConfig
         void setEnableDragAndDrop(bool on) { m_EnableDragAndDrop = on; }
         void setClipboardSharing(bool on) { m_ClipboardSharing = on; }
         void setUdpMouse(bool on) { m_UdpMouse = on; }
+        int udpSyncMs() const { return m_UdpSyncMs; }
+        void setUdpSyncMs(int ms) { m_UdpSyncMs = ms; }
         QList<bool>& switchCorners() { return m_SwitchCorners; }
         std::vector<Hotkey>& hotkeys() { return m_Hotkeys; }
 
@@ -157,6 +159,7 @@ class ServerConfig : public BaseConfig
         bool m_EnableDragAndDrop;
         bool m_ClipboardSharing;
         bool m_UdpMouse;
+        int m_UdpSyncMs;
         MainWindow* m_pMainWindow;
         QMap<QString, LinkConfig> m_LinkConfigs;
         QList<ExplicitLink> m_ExplicitLinks;

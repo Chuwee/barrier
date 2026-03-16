@@ -27,6 +27,8 @@
 
 #include <QDialog>
 #include <QCheckBox>
+#include <QLabel>
+#include <QSpinBox>
 
 class DisplayLayoutWidget;
 
@@ -65,6 +67,7 @@ class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
         DisplayLayoutWidget* m_pDisplayLayout;
         QString m_Message;
         QCheckBox* m_pCheckBoxUdpMouse;
+        QSpinBox* m_pSpinBoxUdpSync;
 };
 
 #endif

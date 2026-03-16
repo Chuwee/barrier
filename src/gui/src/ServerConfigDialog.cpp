@@ -66,8 +66,18 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     // add UDP mouse checkbox to the advanced tab programmatically
     m_pCheckBoxUdpMouse = new QCheckBox(tr("Use &UDP for mouse movement (lower latency)"));
     m_pCheckBoxUdpMouse->setChecked(serverConfig().udpMouse());
-    if (m_pTabAdvanced->layout()) {
-        m_pTabAdvanced->layout()->addWidget(m_pCheckBoxUdpMouse);
+    m_pSpinBoxUdpSync = new QSpinBox();
+    m_pSpinBoxUdpSync->setRange(0, 5000);
+    m_pSpinBoxUdpSync->setSuffix(" ms");
+    m_pSpinBoxUdpSync->setSpecialValueText(tr("Off (no sync)"));
+    m_pSpinBoxUdpSync->setValue(serverConfig().udpSyncMs());
+    QLabel* udpSyncLabel = new QLabel(tr("UDP position sync interval:"));
+    QGridLayout* advLayout = qobject_cast<QGridLayout*>(m_pTabAdvanced->layout());
+    if (advLayout) {
+        int row = advLayout->rowCount();
+        advLayout->addWidget(m_pCheckBoxUdpMouse, row, 0, 1, 2);
+        advLayout->addWidget(udpSyncLabel, row + 1, 0);
+        advLayout->addWidget(m_pSpinBoxUdpSync, row + 1, 1);
     }
 
     for (const Hotkey& hotkey : serverConfig().hotkeys()) {
@@ -140,6 +150,7 @@ void ServerConfigDialog::accept()
     serverConfig().setEnableDragAndDrop(m_pCheckBoxEnableDragAndDrop->isChecked());
     serverConfig().setClipboardSharing(m_pCheckBoxEnableClipboard->isChecked());
     serverConfig().setUdpMouse(m_pCheckBoxUdpMouse->isChecked());
+    serverConfig().setUdpSyncMs(m_pSpinBoxUdpSync->value());
 
     // apply visual layout links to config
     if (m_pDisplayLayout) {
