@@ -105,8 +105,8 @@ private:
     qreal m_scale;
     QPointF m_viewOffset;
 
-    static constexpr qreal SNAP_DIST = 30.0;
-    static constexpr qreal ADJ_DIST = 5.0;
+    static constexpr qreal SNAP_DIST = 50.0;
+    static constexpr qreal ADJ_DIST = 15.0;
     static constexpr qreal DEFAULT_REMOTE_W = 1920.0;
     static constexpr qreal DEFAULT_REMOTE_H = 1080.0;
 };

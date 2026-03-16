@@ -316,6 +316,13 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
             if (a.isLocal && b.isLocal && a.name == b.name)
                 continue;
 
+            // When a remote screen is involved, we don't know its real
+            // resolution (the layout rect is user-resized). Use full-edge
+            // intervals (0,100) for seamless proportional mapping.
+            // Only compute precise fractional intervals when both screens
+            // are local (real pixel geometry known).
+            bool bothLocal = a.isLocal && b.isLocal;
+
             // right edge of a touching left edge of b → a:right=b, b:left=a
             if (std::abs(a.rect.right() - b.rect.left()) < ADJ_DIST) {
                 qreal overlapTop = qMax(a.rect.top(), b.rect.top());
@@ -327,10 +334,16 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
                     fwd.direction = "right";
                     fwd.srcMonitorIndex = a.isLocal ? a.monitorIndex : -1;
                     fwd.dstMonitorIndex = b.isLocal ? b.monitorIndex : -1;
-                    fwd.srcStart = qRound((overlapTop - a.rect.top()) / a.rect.height() * 100);
-                    fwd.srcEnd   = qRound((overlapBot - a.rect.top()) / a.rect.height() * 100);
-                    fwd.dstStart = qRound((overlapTop - b.rect.top()) / b.rect.height() * 100);
-                    fwd.dstEnd   = qRound((overlapBot - b.rect.top()) / b.rect.height() * 100);
+
+                    if (bothLocal) {
+                        fwd.srcStart = qRound((overlapTop - a.rect.top()) / a.rect.height() * 100);
+                        fwd.srcEnd   = qRound((overlapBot - a.rect.top()) / a.rect.height() * 100);
+                        fwd.dstStart = qRound((overlapTop - b.rect.top()) / b.rect.height() * 100);
+                        fwd.dstEnd   = qRound((overlapBot - b.rect.top()) / b.rect.height() * 100);
+                    } else {
+                        fwd.srcStart = 0; fwd.srcEnd = 100;
+                        fwd.dstStart = 0; fwd.dstEnd = 100;
+                    }
                     addLink(fwd);
 
                     GeneratedLink rev;
@@ -358,10 +371,16 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
                     fwd.direction = "down";
                     fwd.srcMonitorIndex = a.isLocal ? a.monitorIndex : -1;
                     fwd.dstMonitorIndex = b.isLocal ? b.monitorIndex : -1;
-                    fwd.srcStart = qRound((overlapLeft - a.rect.left()) / a.rect.width() * 100);
-                    fwd.srcEnd   = qRound((overlapRight - a.rect.left()) / a.rect.width() * 100);
-                    fwd.dstStart = qRound((overlapLeft - b.rect.left()) / b.rect.width() * 100);
-                    fwd.dstEnd   = qRound((overlapRight - b.rect.left()) / b.rect.width() * 100);
+
+                    if (bothLocal) {
+                        fwd.srcStart = qRound((overlapLeft - a.rect.left()) / a.rect.width() * 100);
+                        fwd.srcEnd   = qRound((overlapRight - a.rect.left()) / a.rect.width() * 100);
+                        fwd.dstStart = qRound((overlapLeft - b.rect.left()) / b.rect.width() * 100);
+                        fwd.dstEnd   = qRound((overlapRight - b.rect.left()) / b.rect.width() * 100);
+                    } else {
+                        fwd.srcStart = 0; fwd.srcEnd = 100;
+                        fwd.dstStart = 0; fwd.dstEnd = 100;
+                    }
                     addLink(fwd);
 
                     GeneratedLink rev;
