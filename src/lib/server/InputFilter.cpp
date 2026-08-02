@@ -320,8 +320,10 @@ InputFilter::LockCursorToScreenAction::perform(const Event& event)
 }
 
 InputFilter::SwitchToScreenAction::SwitchToScreenAction(IEventQueue* events,
-                                                        const std::string& screen) :
+                                                        const std::string& screen,
+                                                        SInt32 monitorIndex) :
     m_screen(screen),
+    m_monitorIndex(monitorIndex),
     m_events(events)
 {
     // do nothing
@@ -332,6 +334,11 @@ std::string InputFilter::SwitchToScreenAction::getScreen() const
     return m_screen;
 }
 
+SInt32 InputFilter::SwitchToScreenAction::getMonitorIndex() const
+{
+    return m_monitorIndex;
+}
+
 InputFilter::Action*
 InputFilter::SwitchToScreenAction::clone() const
 {
@@ -340,6 +347,10 @@ InputFilter::SwitchToScreenAction::clone() const
 
 std::string InputFilter::SwitchToScreenAction::format() const
 {
+    if (m_monitorIndex >= 0) {
+        return barrier::string::sprintf("switchToScreen(%s,%d)",
+                                        m_screen.c_str(), m_monitorIndex);
+    }
     return barrier::string::sprintf("switchToScreen(%s)", m_screen.c_str());
 }
 
@@ -357,7 +368,7 @@ InputFilter::SwitchToScreenAction::perform(const Event& event)
 
     // send event
     Server::SwitchToScreenInfo* info =
-        Server::SwitchToScreenInfo::alloc(screen);
+        Server::SwitchToScreenInfo::alloc(screen, m_monitorIndex);
     m_events->addEvent(Event(m_events->forServer().switchToScreen(),
                                 event.getTarget(), info,
                                 Event::kDeliverImmediately));

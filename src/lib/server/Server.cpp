@@ -568,6 +568,34 @@ Server::jumpToScreen(BaseClientProxy* newScreen)
 	switchScreen(newScreen, x, y, false);
 }
 
+void
+Server::jumpToScreen(BaseClientProxy* newScreen, SInt32 monitorIndex)
+{
+	assert(newScreen != NULL);
+
+	std::vector<MonitorGeometry> monitors;
+	newScreen->getMonitors(monitors);
+	if (monitorIndex < 0 || monitorIndex >= static_cast<SInt32>(monitors.size())) {
+		LOG((CLOG_WARN "cannot switch to monitor %d on screen \"%s\": monitor is unavailable",
+			monitorIndex, getName(newScreen).c_str()));
+		return;
+	}
+
+	const MonitorGeometry& monitor = monitors[monitorIndex];
+	if (monitor.m_w <= 0 || monitor.m_h <= 0) {
+		LOG((CLOG_WARN "cannot switch to monitor %d on screen \"%s\": invalid geometry",
+			monitorIndex, getName(newScreen).c_str()));
+		return;
+	}
+
+	// Preserve the normal return position, but make explicit monitor targets
+	// deterministic instead of using another monitor's last cursor position.
+	m_active->setJumpCursorPos(m_x, m_y);
+	SInt32 x = monitor.m_x + monitor.m_w / 2;
+	SInt32 y = monitor.m_y + monitor.m_h / 2;
+	switchScreen(newScreen, x, y, false);
+}
+
 float
 Server::mapToFraction(BaseClientProxy* client,
 				EDirection dir, SInt32 x, SInt32 y) const
@@ -1733,7 +1761,18 @@ Server::handleSwitchToScreenEvent(const Event& event, void*)
 		LOG((CLOG_DEBUG1 "screen \"%s\" not active", info->m_screen));
 	}
 	else {
-		jumpToScreen(index->second);
+		if (info->m_monitorIndex >= 0) {
+			// Local monitor navigation remains the operating system's job.
+			if (index->second == m_active) {
+				LOG((CLOG_DEBUG1 "screen \"%s\" is already active; ignoring monitor switch",
+					info->m_screen));
+				return;
+			}
+			jumpToScreen(index->second, info->m_monitorIndex);
+		}
+		else {
+			jumpToScreen(index->second);
+		}
 	}
 }
 
@@ -2776,11 +2815,13 @@ Server::LockCursorToScreenInfo::alloc(State state)
 //
 
 Server::SwitchToScreenInfo*
-Server::SwitchToScreenInfo::alloc(const std::string& screen)
+Server::SwitchToScreenInfo::alloc(const std::string& screen,
+								  SInt32 monitorIndex)
 {
 	SwitchToScreenInfo* info =
 		(SwitchToScreenInfo*)malloc(sizeof(SwitchToScreenInfo) +
-								screen.size());
+									screen.size());
+	info->m_monitorIndex = monitorIndex;
 	strcpy(info->m_screen, screen.c_str());
 	return info;
 }

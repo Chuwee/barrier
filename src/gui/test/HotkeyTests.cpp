@@ -28,6 +28,7 @@ struct TestAction
     std::vector<TestKey> keys;
     std::vector<std::string> type_screen_names;
     std::string screen_name;
+    int screen_monitor = -1;
     Action::SwitchDirection switch_direction;
     Action::LockCursorMode lock_cursor_mode;
 
@@ -59,11 +60,13 @@ struct TestAction
         return createKeyAction(Action::keystroke, keys, type_screen_names);
     }
 
-    static TestAction createSwitchToScreen(const std::string& screen_name)
+    static TestAction createSwitchToScreen(const std::string& screen_name,
+                                           int screen_monitor = -1)
     {
         TestAction action;
         action.type = Action::switchToScreen;
         action.screen_name = screen_name;
+        action.screen_monitor = screen_monitor;
         return action;
     }
 
@@ -120,6 +123,7 @@ namespace {
             }
             case Action::switchToScreen:
                 action.setSwitchScreenName(QString::fromStdString(test_action.screen_name));
+                action.setSwitchScreenMonitor(test_action.screen_monitor);
                 break;
             case Action::toggleScreen:
                 break;
@@ -194,6 +198,7 @@ void doHotkeyLoadSaveTest(const TestHotKey& test_hotkey)
             ASSERT_EQ(action_before.type(), action_after.type());
             ASSERT_EQ(action_before.typeScreenNames(), action_after.typeScreenNames());
             ASSERT_EQ(action_before.switchScreenName(), action_after.switchScreenName());
+            ASSERT_EQ(action_before.switchScreenMonitor(), action_after.switchScreenMonitor());
             ASSERT_EQ(action_before.switchDirection(), action_after.switchDirection());
             ASSERT_EQ(action_before.lockCursorMode(), action_after.lockCursorMode());
             ASSERT_EQ(action_before.activeOnRelease(), action_after.activeOnRelease());
@@ -251,6 +256,19 @@ TEST(HotkeyLoadSaveTests, KeysMultipleAction)
         {
             TestAction::createKeyDown({{Qt::Key_Z, Qt::NoModifier}}),
             TestAction::createSwitchToScreen("test_screen")
+        }
+    };
+    doHotkeyLoadSaveTest(hotkey);
+}
+
+TEST(HotkeyLoadSaveTests, SwitchToSpecificMonitor)
+{
+    TestHotKey hotkey = {
+        {
+            {Qt::Key_A, Qt::NoModifier}
+        },
+        {
+            TestAction::createSwitchToScreen("test_screen", 2)
         }
     };
     doHotkeyLoadSaveTest(hotkey);
@@ -317,4 +335,18 @@ TEST(HotkeyToTexStreamTests, KeysMultipleAction)
     };
     ASSERT_EQ(hotkeyToStringViaTextStream(createHotkey(hotkey)),
               "\tkeystroke(a+b) = keyDown(z,*), switchToScreen(test_screen)\n");
+}
+
+TEST(HotkeyToTexStreamTests, SwitchToSpecificMonitor)
+{
+    TestHotKey hotkey = {
+        {
+            {Qt::Key_A, Qt::NoModifier}
+        },
+        {
+            TestAction::createSwitchToScreen("test_screen", 2)
+        }
+    };
+    ASSERT_EQ(hotkeyToStringViaTextStream(createHotkey(hotkey)),
+              "\tkeystroke(a) = switchToScreen(test_screen,2)\n");
 }

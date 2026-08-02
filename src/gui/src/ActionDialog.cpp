@@ -49,6 +49,14 @@ ActionDialog::ActionDialog(QWidget* parent, ServerConfig& config, Hotkey& hotkey
     m_pButtonGroupType->button(m_Action.type())->setChecked(true);
     m_pComboSwitchInDirection->setCurrentIndex(m_Action.switchDirection());
     m_pComboLockCursorToScreen->setCurrentIndex(m_Action.lockCursorMode());
+    m_pCheckBoxSwitchToMonitor->setChecked(m_Action.switchScreenMonitor() >= 0);
+    m_pSpinBoxSwitchToMonitor->setValue(
+        m_Action.switchScreenMonitor() >= 0 ? m_Action.switchScreenMonitor() + 1 : 1);
+
+    connect(m_pRadioSwitchToScreen, SIGNAL(toggled(bool)),
+            this, SLOT(updateSwitchMonitorControls()));
+    connect(m_pCheckBoxSwitchToMonitor, SIGNAL(toggled(bool)),
+            this, SLOT(updateSwitchMonitorControls()));
 
     if (m_Action.activeOnRelease())
         m_pRadioHotkeyReleased->setChecked(true);
@@ -73,6 +81,8 @@ ActionDialog::ActionDialog(QWidget* parent, ServerConfig& config, Hotkey& hotkey
             idx++;
         }
     }
+
+    updateSwitchMonitorControls();
 }
 
 void ActionDialog::accept()
@@ -90,11 +100,23 @@ void ActionDialog::accept()
     }
 
     m_Action.setSwitchScreenName(m_pComboSwitchToScreen->currentText());
+    m_Action.setSwitchScreenMonitor(
+        m_pCheckBoxSwitchToMonitor->isChecked()
+            ? m_pSpinBoxSwitchToMonitor->value() - 1
+            : -1);
     m_Action.setSwitchDirection(m_pComboSwitchInDirection->currentIndex());
     m_Action.setLockCursorMode(m_pComboLockCursorToScreen->currentIndex());
     m_Action.setActiveOnRelease(m_pRadioHotkeyReleased->isChecked());
 
     QDialog::accept();
+}
+
+void ActionDialog::updateSwitchMonitorControls()
+{
+    const bool switchToScreen = m_pRadioSwitchToScreen->isChecked();
+    m_pCheckBoxSwitchToMonitor->setEnabled(switchToScreen);
+    m_pSpinBoxSwitchToMonitor->setEnabled(
+        switchToScreen && m_pCheckBoxSwitchToMonitor->isChecked());
 }
 
 void ActionDialog::on_m_pKeySequenceWidgetHotkey_keySequenceChanged()

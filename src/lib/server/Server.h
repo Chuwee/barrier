@@ -66,9 +66,11 @@ public:
     //! Switch to screen data
     class SwitchToScreenInfo {
     public:
-        static SwitchToScreenInfo* alloc(const std::string& screen);
+        static SwitchToScreenInfo* alloc(const std::string& screen,
+                                         SInt32 monitorIndex = -1);
 
     public:
+        SInt32          m_monitorIndex;
         // this is a C-string;  this type is a variable size structure
         char            m_screen[1];
     };
@@ -210,6 +212,7 @@ private:
 
     // jump to screen
     void                jumpToScreen(BaseClientProxy*);
+    void                jumpToScreen(BaseClientProxy*, SInt32 monitorIndex);
 
     // convert pixel position to fraction, using x or y depending on the
     // direction.

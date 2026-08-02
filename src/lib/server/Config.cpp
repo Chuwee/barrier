@@ -27,6 +27,7 @@
 #include "common/stdistream.h"
 #include "common/stdostream.h"
 
+#include <climits>
 #include <cstdlib>
 #include <vector>
 
@@ -1371,8 +1372,8 @@ void Config::parseAction(ConfigReadContext& s, const std::string& name,
 */
 
 	else if (name == "switchToScreen") {
-		if (args.size() != 1) {
-			throw XConfigRead(s, "syntax for action: switchToScreen(name)");
+		if (args.size() < 1 || args.size() > 2) {
+			throw XConfigRead(s, "syntax for action: switchToScreen(name[,monitor])");
 		}
 
         std::string screen = args[0];
@@ -1383,7 +1384,19 @@ void Config::parseAction(ConfigReadContext& s, const std::string& name,
 			throw XConfigRead(s, "unknown screen name in switchToScreen");
 		}
 
-		action = new InputFilter::SwitchToScreenAction(m_events, screen);
+		SInt32 monitorIndex = -1;
+		if (args.size() == 2) {
+			char* end = NULL;
+			long parsed = std::strtol(args[1].c_str(), &end, 10);
+			if (end == args[1].c_str() || *end != '\0' ||
+				parsed < 0 || parsed > INT_MAX) {
+				throw XConfigRead(s, "invalid monitor index in switchToScreen");
+			}
+			monitorIndex = static_cast<SInt32>(parsed);
+		}
+
+		action = new InputFilter::SwitchToScreenAction(
+			m_events, screen, monitorIndex);
 	}
 
   else if (name == "toggleScreen") {
