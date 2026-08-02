@@ -75,7 +75,7 @@ protected:
 
 private:
     void rebuildLocalMonitors();
-    void layoutRemoteScreens();
+    void layoutRemoteScreens(const QVector<int>& displayIndices);
 
     // coordinate transforms
     QRectF toWidget(const QRectF& logical) const;

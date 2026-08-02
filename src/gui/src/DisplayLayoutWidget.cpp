@@ -53,7 +53,7 @@ void DisplayLayoutWidget::setRemoteScreens(const QStringList& screenNames)
     }
 
     // add new remotes
-    bool anyRestored = false;
+    QVector<int> unpositionedDisplays;
     for (const QString& name : screenNames) {
         DisplayRect d;
         d.name = name;
@@ -62,22 +62,24 @@ void DisplayLayoutWidget::setRemoteScreens(const QStringList& screenNames)
         d.rect = QRectF(0, 0, DEFAULT_REMOTE_W, DEFAULT_REMOTE_H);
 
         // restore saved position and size if available
-        if (m_pServerConfig && m_pServerConfig->displayPositions().contains(name)) {
+        bool restored = m_pServerConfig &&
+            m_pServerConfig->displayPositions().contains(name);
+        if (restored) {
             QPointF pos = m_pServerConfig->displayPositions().value(name);
             d.rect.moveTopLeft(pos);
             if (m_pServerConfig->displaySizes().contains(name)) {
                 QSizeF sz = m_pServerConfig->displaySizes().value(name);
                 d.rect.setSize(QSizeF(sz.width(), sz.height()));
             }
-            anyRestored = true;
         }
 
         m_displays.append(d);
+        if (!restored)
+            unpositionedDisplays.append(m_displays.size() - 1);
     }
 
-    // only auto-layout if no saved positions were found
-    if (!anyRestored)
-        layoutRemoteScreens();
+    if (!unpositionedDisplays.isEmpty())
+        layoutRemoteScreens(unpositionedDisplays);
 
     update();
 }
@@ -114,7 +116,7 @@ void DisplayLayoutWidget::rebuildLocalMonitors()
     }
 }
 
-void DisplayLayoutWidget::layoutRemoteScreens()
+void DisplayLayoutWidget::layoutRemoteScreens(const QVector<int>& displayIndices)
 {
     // find bounding box of all local monitors
     QRectF localBounds;
@@ -130,22 +132,29 @@ void DisplayLayoutWidget::layoutRemoteScreens()
     if (localBounds.isNull())
         localBounds = QRectF(0, 0, 1920, 1080);
 
-    // place remote screens alternating left and right of locals
-    qreal leftX = localBounds.left() - DEFAULT_REMOTE_W - 50;
-    qreal rightX = localBounds.right() + 50;
+    // Keep new screens outside both the local monitors and restored remotes.
+    QRectF occupiedBounds = localBounds;
+    for (int i = 0; i < m_displays.size(); ++i) {
+        if (!displayIndices.contains(i))
+            occupiedBounds = occupiedBounds.united(m_displays[i].rect);
+    }
+
+    qreal leftX = occupiedBounds.left() - 50;
+    qreal rightX = occupiedBounds.right() + 50;
     bool placeRight = true;
 
-    for (DisplayRect& d : m_displays) {
-        if (d.isLocal)
+    for (int index : displayIndices) {
+        if (index < 0 || index >= m_displays.size())
             continue;
 
+        DisplayRect& d = m_displays[index];
         qreal cy = localBounds.center().y() - d.rect.height() / 2.0;
         if (placeRight) {
             d.rect.moveTopLeft(QPointF(rightX, cy));
-            rightX += d.rect.width() + 50;
+            rightX = d.rect.right() + 50;
         } else {
             d.rect.moveTopLeft(QPointF(leftX - d.rect.width(), cy));
-            leftX -= d.rect.width() + 50;
+            leftX = d.rect.left() - 50;
         }
         placeRight = !placeRight;
     }
