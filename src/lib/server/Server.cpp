@@ -2285,18 +2285,7 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 	// have no idea where it really is.
 	if (m_relativeMoves && isLockedToScreenServer()) {
 		LOG((CLOG_DEBUG2 "relative move on %s by %d,%d", getName(m_active).c_str(), dx, dy));
-		bool haveP2pPeerRel = false;
-		if (m_p2pTransport && m_p2pTransport->isActive()) {
-			struct sockaddr_in6 dummy;
-			haveP2pPeerRel = m_p2pTransport->findPeer(
-				getName(m_active), dummy);
-		}
-		if (m_udpMouseEnabled &&
-			(m_udpClients.count(getName(m_active)) > 0 ||
-			 haveP2pPeerRel)) {
-			sendUdpDatagram(0x01, dx, dy);
-		}
-		else {
+		if (!m_udpMouseEnabled || !sendUdpDatagram(0x01, dx, dy)) {
 			m_active->mouseRelativeMove(dx, dy);
 		}
 		return;
@@ -2442,27 +2431,20 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 		// warp cursor if it moved.
 		if (m_x != xOld || m_y != yOld) {
 			LOG((CLOG_DEBUG2 "move on %s to %d,%d", getName(m_active).c_str(), m_x, m_y));
-			bool haveP2pPeer = false;
-			if (m_p2pTransport && m_p2pTransport->isActive()) {
-				struct sockaddr_in6 dummy;
-				haveP2pPeer = m_p2pTransport->findPeer(
-					getName(m_active), dummy);
-			}
-			if (m_udpMouseEnabled && m_active != m_primaryClient &&
-					(m_udpClients.count(getName(m_active)) > 0 ||
-					 haveP2pPeer)) {
-				// send relative delta via UDP/P2P (low latency)
-				sendUdpDatagram(0x01, dx, dy);
-				// periodically send absolute sync to correct drift
-				if (m_udpSyncInterval > 0.0 &&
-					m_udpSyncTimer.getTime() >= m_udpSyncInterval) {
-					sendUdpDatagram(0x02, m_x, m_y);
-					m_udpSyncTimer.reset();
-				}
-			}
-			else {
+			const SInt32 sentDx = m_x - xOld;
+			const SInt32 sentDy = m_y - yOld;
+			bool sentLowLatency = m_udpMouseEnabled &&
+				m_active != m_primaryClient &&
+				sendUdpDatagram(0x01, sentDx, sentDy);
+			if (!sentLowLatency) {
 				// TCP fallback (UDP not ready or not enabled)
 				m_active->mouseMove(m_x, m_y);
+			}
+			else if (m_udpSyncInterval > 0.0 &&
+					m_udpSyncTimer.getTime() >= m_udpSyncInterval &&
+					sendUdpDatagram(0x02, m_x, m_y)) {
+				// Periodically send an absolute position to correct UDP drift.
+				m_udpSyncTimer.reset();
 			}
 		}
 	}
@@ -2708,11 +2690,11 @@ Server::forceLeaveClient(BaseClientProxy* client)
 // Server UDP mouse channel
 //
 
-void
+bool
 Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
 {
 	if (!m_udpMouseEnabled)
-		return;
+		return false;
 
 	// build the 20-byte datagram first (shared by P2P and regular UDP)
 	// format: [type:1][pad:1][seq:4][a:4][b:4][ts:4][pad:2]
@@ -2733,7 +2715,9 @@ Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
 	buf[12] = static_cast<UInt8>(static_cast<UInt32>(b) >> 8);
 	buf[13] = static_cast<UInt8>(static_cast<UInt32>(b));
 
-	std::string activeName = getName(m_active);
+	// Transport registration uses the exact name sent by the connected client.
+	// The configured canonical name may differ by alias or letter case.
+	std::string activeName = m_active->getName();
 
 	// try P2P transport first (lowest latency — bypasses router)
 	// only skip the regular UDP path if the P2P send actually succeeds;
@@ -2746,7 +2730,7 @@ Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
 				int sent = p2pSock->sendToIPv6(buf, sizeof(buf), peerAddr);
 				if (sent == sizeof(buf)) {
 					LOG((CLOG_DEBUG2 "sent via P2P to %s", activeName.c_str()));
-					return;
+					return true;
 				}
 				LOG((CLOG_DEBUG "P2P send failed, falling back to UDP"));
 			}
@@ -2755,7 +2739,7 @@ Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
 
 	// fall back to regular UDP
 	if (!m_udpSocket)
-		return;
+		return false;
 
 	// drain any incoming hello datagrams to register client addresses
 	{
@@ -2776,9 +2760,14 @@ Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
 
 	UdpClientMap::const_iterator it = m_udpClients.find(activeName);
 	if (it == m_udpClients.end())
-		return;
+		return false;
 
-	m_udpSocket->sendTo(buf, sizeof(buf), it->second);
+	int sent = m_udpSocket->sendTo(buf, sizeof(buf), it->second);
+	if (sent != sizeof(buf)) {
+		LOG((CLOG_DEBUG "UDP send failed, falling back to TCP"));
+		return false;
+	}
+	return true;
 }
 
 

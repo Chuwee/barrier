@@ -516,7 +516,7 @@ private:
     typedef std::map<std::string, struct sockaddr_in> UdpClientMap;
     UdpClientMap        m_udpClients;
 
-    void                sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b);
+    bool                sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b);
 
     // P2P (AWDL) transport — preferred over regular UDP when active
     P2PTransport*        m_p2pTransport;
