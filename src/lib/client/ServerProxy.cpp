@@ -1050,10 +1050,15 @@ ServerProxy::processMouseDatagram(const UInt8* buf)
 	UInt8 type = buf[0];
 	UInt32 seq = ((UInt32)buf[2] << 24) | ((UInt32)buf[3] << 16) |
 				 ((UInt32)buf[4] << 8)  | (UInt32)buf[5];
-	SInt32 a = ((SInt32)buf[6] << 24) | ((SInt32)buf[7] << 16) |
-			   ((SInt32)buf[8] << 8)  | (SInt32)buf[9];
-	SInt32 b = ((SInt32)buf[10] << 24) | ((SInt32)buf[11] << 16) |
-			   ((SInt32)buf[12] << 8)  | (SInt32)buf[13];
+	auto decodeSInt32 = [](const UInt8* value) {
+		UInt32 bits = ((UInt32)value[0] << 24) | ((UInt32)value[1] << 16) |
+					  ((UInt32)value[2] << 8)  | (UInt32)value[3];
+		if ((bits & 0x80000000u) == 0)
+			return static_cast<SInt32>(bits);
+		return static_cast<SInt32>(-1 - static_cast<SInt32>(~bits));
+	};
+	SInt32 a = decodeSInt32(buf + 6);
+	SInt32 b = decodeSInt32(buf + 10);
 
 	// discard duplicate packets (seq already seen)
 	if (seq <= m_udpLastSeqNum) {

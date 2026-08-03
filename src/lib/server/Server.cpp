@@ -945,6 +945,51 @@ Server::mapToNeighbor(BaseClientProxy* src,
 
 	assert(src != NULL);
 
+	// Visual-layout links from local displays are keyed by source monitor.
+	// Resolve an outer edge against the monitor under the cursor before
+	// falling back to legacy whole-screen links.
+	SInt32 sx, sy, sw, sh;
+	src->getShape(sx, sy, sw, sh);
+	std::vector<MonitorGeometry> monitors;
+	src->getMonitors(monitors);
+	for (SInt32 i = 0; i < (SInt32)monitors.size(); ++i) {
+		const MonitorGeometry& monitor = monitors[i];
+		bool atOuterEdge = false;
+		bool inEdgeSpan = false;
+		switch (srcSide) {
+		case kLeft:
+			atOuterEdge = monitor.m_x == sx;
+			inEdgeSpan = y >= monitor.m_y && y < monitor.m_y + monitor.m_h;
+			break;
+		case kRight:
+			atOuterEdge = monitor.m_x + monitor.m_w == sx + sw;
+			inEdgeSpan = y >= monitor.m_y && y < monitor.m_y + monitor.m_h;
+			break;
+		case kTop:
+			atOuterEdge = monitor.m_y == sy;
+			inEdgeSpan = x >= monitor.m_x && x < monitor.m_x + monitor.m_w;
+			break;
+		case kBottom:
+			atOuterEdge = monitor.m_y + monitor.m_h == sy + sh;
+			inEdgeSpan = x >= monitor.m_x && x < monitor.m_x + monitor.m_w;
+			break;
+		default:
+			break;
+		}
+
+		if (atOuterEdge && inEdgeSpan) {
+			SInt32 monitorX = x;
+			SInt32 monitorY = y;
+			BaseClientProxy* monitorDst = getNeighborFromMonitor(
+				src, srcSide, i, monitorX, monitorY);
+			if (monitorDst != NULL) {
+				x = monitorX;
+				y = monitorY;
+				return monitorDst;
+			}
+		}
+	}
+
 	// get the first neighbor
 	bool usedMonitorTarget = false;
 	BaseClientProxy* dst = getNeighbor(src, srcSide, x, y, usedMonitorTarget);
