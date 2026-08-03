@@ -60,6 +60,7 @@ ServerProxy::ServerProxy(Client* client, barrier::IStream* stream, IEventQueue* 
     m_udpSocket(NULL),
     m_udpLastSeqNum(0),
     m_udpPollTimer(NULL),
+    m_udpHelloTimer(NULL),
     m_p2pTransport(NULL)
 {
     assert(m_client != NULL);
@@ -95,6 +96,11 @@ ServerProxy::~ServerProxy()
         m_events->removeHandler(Event::kTimer, m_udpPollTimer);
         m_events->deleteTimer(m_udpPollTimer);
         m_udpPollTimer = NULL;
+    }
+    if (m_udpHelloTimer != NULL) {
+        m_events->removeHandler(Event::kTimer, m_udpHelloTimer);
+        m_events->deleteTimer(m_udpHelloTimer);
+        m_udpHelloTimer = NULL;
     }
     delete m_udpSocket;
     m_udpSocket = NULL;
@@ -968,6 +974,11 @@ ServerProxy::udpPort()
 		m_events->deleteTimer(m_udpPollTimer);
 		m_udpPollTimer = NULL;
 	}
+	if (m_udpHelloTimer != NULL) {
+		m_events->removeHandler(Event::kTimer, m_udpHelloTimer);
+		m_events->deleteTimer(m_udpHelloTimer);
+		m_udpHelloTimer = NULL;
+	}
 	delete m_udpSocket;
 	m_udpSocket = new UDPSocket();
 	m_udpLastSeqNum = 0;
@@ -983,14 +994,12 @@ ServerProxy::udpPort()
 		return;
 	}
 
-	// send hello datagram for NAT punch-through and address registration
-	// format: [type=0xFF][pad:1][seq:4][clientName...]
-	std::string name = m_client->getName();
-	size_t dgSize = 6 + name.size();
-	std::vector<UInt8> hello(dgSize, 0);
-	hello[0] = 0xFF;
-	std::memcpy(&hello[6], name.c_str(), name.size());
-	m_udpSocket->send(&hello[0], (int)hello.size());
+	// Retry registration independently of the 1ms receive-poll hot path.
+	sendUdpHello();
+	m_udpHelloTimer = m_events->newTimer(1.0, NULL);
+	m_events->adoptHandler(Event::kTimer, m_udpHelloTimer,
+		new TMethodEventJob<ServerProxy>(this,
+			&ServerProxy::handleUdpHelloTimer));
 
 	// start a 1ms poll timer so UDP datagrams are read promptly
 	// even when no TCP traffic is flowing
@@ -1014,6 +1023,24 @@ ServerProxy::udpPort()
 		LOG((CLOG_NOTE "P2P transport unavailable, using regular UDP"));
 		delete m_p2pTransport;
 		m_p2pTransport = NULL;
+	}
+}
+
+void
+ServerProxy::sendUdpHello()
+{
+	if (m_udpSocket == NULL)
+		return;
+
+	// format: [type=0xFF][pad:1][seq:4][clientName...]
+	std::string name = m_client->getName();
+	size_t dgSize = 6 + name.size();
+	std::vector<UInt8> hello(dgSize, 0);
+	hello[0] = 0xFF;
+	std::memcpy(&hello[6], name.c_str(), name.size());
+	if (m_udpSocket->send(&hello[0], (int)hello.size()) !=
+			static_cast<int>(hello.size())) {
+		LOG((CLOG_DEBUG "UDP registration hello failed; retrying"));
 	}
 }
 
@@ -1071,4 +1098,10 @@ void
 ServerProxy::handleUdpPollTimer(const Event&, void*)
 {
 	pollUdp();
+}
+
+void
+ServerProxy::handleUdpHelloTimer(const Event&, void*)
+{
+	sendUdpHello();
 }

@@ -299,19 +299,60 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
 {
     QList<GeneratedLink> links;
 
-    // helper to add a link if not already present (full key match)
-    auto addLink = [&links](const GeneratedLink& link) {
+    auto sameLink = [](const GeneratedLink& a, const GeneratedLink& b) {
+        return a.srcScreen == b.srcScreen &&
+            a.dstScreen == b.dstScreen &&
+            a.direction == b.direction &&
+            a.srcMonitorIndex == b.srcMonitorIndex &&
+            a.dstMonitorIndex == b.dstMonitorIndex &&
+            a.srcStart == b.srcStart &&
+            a.srcEnd == b.srcEnd &&
+            a.dstStart == b.dstStart &&
+            a.dstEnd == b.dstEnd;
+    };
+    auto canAddLink = [&links, &sameLink](const GeneratedLink& link) {
         for (const GeneratedLink& existing : links) {
+            if (sameLink(existing, link))
+                return true;
             if (existing.srcScreen == link.srcScreen &&
-                existing.dstScreen == link.dstScreen &&
                 existing.direction == link.direction &&
                 existing.srcMonitorIndex == link.srcMonitorIndex &&
-                existing.dstMonitorIndex == link.dstMonitorIndex &&
-                existing.srcStart == link.srcStart &&
-                existing.srcEnd == link.srcEnd)
+                existing.srcStart < link.srcEnd &&
+                link.srcStart < existing.srcEnd)
+                return false;
+        }
+        return true;
+    };
+    auto appendLink = [&links, &sameLink](const GeneratedLink& link) {
+        for (const GeneratedLink& existing : links) {
+            if (sameLink(existing, link))
                 return;
         }
         links.append(link);
+    };
+    auto addLinkPair = [&canAddLink, &appendLink](const GeneratedLink& fwd,
+                                                  const GeneratedLink& rev) {
+        if (!canAddLink(fwd) || !canAddLink(rev))
+            return;
+        appendLink(fwd);
+        appendLink(rev);
+    };
+    auto setInterval = [](qreal overlapStart, qreal overlapEnd,
+                          qreal edgeStart, qreal edgeLength,
+                          int& start, int& end) {
+        if (edgeLength <= 0.0) {
+            start = 0;
+            end = 100;
+            return;
+        }
+        start = qBound(0, qRound((overlapStart - edgeStart) /
+                                 edgeLength * 100.0), 100);
+        end = qBound(0, qRound((overlapEnd - edgeStart) /
+                               edgeLength * 100.0), 100);
+        if (start >= 100)
+            start = 99;
+        if (end <= start)
+            end = start + 1;
     };
 
     for (int i = 0; i < m_displays.size(); ++i) {
@@ -325,13 +366,6 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
             if (a.isLocal && b.isLocal && a.name == b.name)
                 continue;
 
-            // When a remote screen is involved, we don't know its real
-            // resolution (the layout rect is user-resized). Use full-edge
-            // intervals (0,100) for seamless proportional mapping.
-            // Only compute precise fractional intervals when both screens
-            // are local (real pixel geometry known).
-            bool bothLocal = a.isLocal && b.isLocal;
-
             // right edge of a touching left edge of b → a:right=b, b:left=a
             if (std::abs(a.rect.right() - b.rect.left()) < ADJ_DIST) {
                 qreal overlapTop = qMax(a.rect.top(), b.rect.top());
@@ -344,16 +378,10 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
                     fwd.srcMonitorIndex = a.isLocal ? a.monitorIndex : -1;
                     fwd.dstMonitorIndex = b.isLocal ? b.monitorIndex : -1;
 
-                    if (bothLocal) {
-                        fwd.srcStart = qRound((overlapTop - a.rect.top()) / a.rect.height() * 100);
-                        fwd.srcEnd   = qRound((overlapBot - a.rect.top()) / a.rect.height() * 100);
-                        fwd.dstStart = qRound((overlapTop - b.rect.top()) / b.rect.height() * 100);
-                        fwd.dstEnd   = qRound((overlapBot - b.rect.top()) / b.rect.height() * 100);
-                    } else {
-                        fwd.srcStart = 0; fwd.srcEnd = 100;
-                        fwd.dstStart = 0; fwd.dstEnd = 100;
-                    }
-                    addLink(fwd);
+                    setInterval(overlapTop, overlapBot, a.rect.top(),
+                                a.rect.height(), fwd.srcStart, fwd.srcEnd);
+                    setInterval(overlapTop, overlapBot, b.rect.top(),
+                                b.rect.height(), fwd.dstStart, fwd.dstEnd);
 
                     GeneratedLink rev;
                     rev.srcScreen = b.name;
@@ -365,7 +393,7 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
                     rev.srcEnd   = fwd.dstEnd;
                     rev.dstStart = fwd.srcStart;
                     rev.dstEnd   = fwd.srcEnd;
-                    addLink(rev);
+                    addLinkPair(fwd, rev);
                 }
             }
 
@@ -381,16 +409,10 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
                     fwd.srcMonitorIndex = a.isLocal ? a.monitorIndex : -1;
                     fwd.dstMonitorIndex = b.isLocal ? b.monitorIndex : -1;
 
-                    if (bothLocal) {
-                        fwd.srcStart = qRound((overlapLeft - a.rect.left()) / a.rect.width() * 100);
-                        fwd.srcEnd   = qRound((overlapRight - a.rect.left()) / a.rect.width() * 100);
-                        fwd.dstStart = qRound((overlapLeft - b.rect.left()) / b.rect.width() * 100);
-                        fwd.dstEnd   = qRound((overlapRight - b.rect.left()) / b.rect.width() * 100);
-                    } else {
-                        fwd.srcStart = 0; fwd.srcEnd = 100;
-                        fwd.dstStart = 0; fwd.dstEnd = 100;
-                    }
-                    addLink(fwd);
+                    setInterval(overlapLeft, overlapRight, a.rect.left(),
+                                a.rect.width(), fwd.srcStart, fwd.srcEnd);
+                    setInterval(overlapLeft, overlapRight, b.rect.left(),
+                                b.rect.width(), fwd.dstStart, fwd.dstEnd);
 
                     GeneratedLink rev;
                     rev.srcScreen = b.name;
@@ -402,7 +424,7 @@ QList<GeneratedLink> DisplayLayoutWidget::computeLinks() const
                     rev.srcEnd   = fwd.dstEnd;
                     rev.dstStart = fwd.srcStart;
                     rev.dstEnd   = fwd.srcEnd;
-                    addLink(rev);
+                    addLinkPair(fwd, rev);
                 }
             }
         }

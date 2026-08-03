@@ -109,6 +109,7 @@ private:
     void                fileChunkReceived();
     void                dragInfoReceived();
     void                udpPort();
+    void                sendUdpHello();
     void                pollUdp();
     void                processMouseDatagram(const UInt8* buf);
     void                handleClipboardSendingEvent(const Event&, void*);
@@ -140,7 +141,9 @@ private:
     UDPSocket*            m_udpSocket;
     UInt32                m_udpLastSeqNum;
     EventQueueTimer*    m_udpPollTimer;
+    EventQueueTimer*    m_udpHelloTimer;
     void                handleUdpPollTimer(const Event&, void*);
+    void                handleUdpHelloTimer(const Event&, void*);
 
     // P2P (AWDL) transport — receives datagrams via direct WiFi P2P
     P2PTransport*        m_p2pTransport;

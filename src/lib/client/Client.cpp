@@ -716,11 +716,14 @@ Client::handleHello(const Event&, void*)
     // store the server's protocol version for feature gating
     m_serverProtocolMinor = minor;
 
-    // say hello back
-    LOG((CLOG_DEBUG1 "say hello version %d.%d", kProtocolMajorVersion, kProtocolMinorVersion));
+    // Reply with the highest minor version supported by both peers.  Older
+    // servers reject a hello-back that advertises an unknown newer minor.
+    const SInt16 negotiatedMinor = minor < kProtocolMinorVersion ?
+        minor : kProtocolMinorVersion;
+    LOG((CLOG_DEBUG1 "say hello version %d.%d", kProtocolMajorVersion, negotiatedMinor));
     ProtocolUtil::writef(m_stream, kMsgHelloBack,
                             kProtocolMajorVersion,
-                            kProtocolMinorVersion, &m_name);
+                            negotiatedMinor, &m_name);
 
     // now connected but waiting to complete handshake
     setupScreen();
