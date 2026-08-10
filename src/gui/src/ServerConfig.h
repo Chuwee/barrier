@@ -21,10 +21,14 @@
 #define SERVERCONFIG__H
 
 #include <QList>
+#include <QMap>
+#include <QPointF>
+#include <QSizeF>
 
 #include "Screen.h"
 #include "BaseConfig.h"
 #include "Hotkey.h"
+#include "LinkConfig.h"
 
 class QTextStream;
 class QSettings;
@@ -63,6 +67,32 @@ class ServerConfig : public BaseConfig
         bool ignoreAutoConfigClient() const { return m_IgnoreAutoConfigClient; }
         bool enableDragAndDrop() const { return m_EnableDragAndDrop; }
         bool clipboardSharing() const { return m_ClipboardSharing; }
+        bool udpMouse() const { return m_UdpMouse; }
+
+        const QMap<QString, LinkConfig>& linkConfigs() const { return m_LinkConfigs; }
+        LinkConfig linkConfig(const QString& screenName, const QString& direction) const;
+        void setLinkConfig(const QString& screenName, const QString& direction,
+                           const LinkConfig& config);
+        void clearLinkConfigs() { m_LinkConfigs.clear(); }
+
+        bool hasScreen(const QString& name) const;
+        void ensureScreen(const QString& name);
+
+        struct ExplicitLink {
+            QString srcScreen;
+            QString dstScreen;
+            QString direction;
+            LinkConfig config;
+        };
+        const QList<ExplicitLink>& explicitLinks() const { return m_ExplicitLinks; }
+        void clearExplicitLinks() { m_ExplicitLinks.clear(); }
+        void addExplicitLink(const ExplicitLink& link) { m_ExplicitLinks.append(link); }
+
+        const QMap<QString, QPointF>& displayPositions() const { return m_DisplayPositions; }
+        void setDisplayPosition(const QString& name, const QPointF& pos) { m_DisplayPositions[name] = pos; }
+        const QMap<QString, QSizeF>& displaySizes() const { return m_DisplaySizes; }
+        void setDisplaySize(const QString& name, const QSizeF& sz) { m_DisplaySizes[name] = sz; }
+        void clearDisplayPositions() { m_DisplayPositions.clear(); m_DisplaySizes.clear(); }
 
         void saveSettings();
         void loadSettings();
@@ -92,6 +122,9 @@ class ServerConfig : public BaseConfig
         void setIgnoreAutoConfigClient(bool on) { m_IgnoreAutoConfigClient = on; }
         void setEnableDragAndDrop(bool on) { m_EnableDragAndDrop = on; }
         void setClipboardSharing(bool on) { m_ClipboardSharing = on; }
+        void setUdpMouse(bool on) { m_UdpMouse = on; }
+        int udpSyncMs() const { return m_UdpSyncMs; }
+        void setUdpSyncMs(int ms) { m_UdpSyncMs = ms; }
         QList<bool>& switchCorners() { return m_SwitchCorners; }
         std::vector<Hotkey>& hotkeys() { return m_Hotkeys; }
 
@@ -125,7 +158,13 @@ class ServerConfig : public BaseConfig
         bool m_IgnoreAutoConfigClient;
         bool m_EnableDragAndDrop;
         bool m_ClipboardSharing;
+        bool m_UdpMouse;
+        int m_UdpSyncMs;
         MainWindow* m_pMainWindow;
+        QMap<QString, LinkConfig> m_LinkConfigs;
+        QList<ExplicitLink> m_ExplicitLinks;
+        QMap<QString, QPointF> m_DisplayPositions;
+        QMap<QString, QSizeF> m_DisplaySizes;
 };
 
 QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config);

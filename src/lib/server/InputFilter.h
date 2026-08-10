@@ -152,9 +152,11 @@ public:
     // SwitchToScreenAction
     class SwitchToScreenAction : public Action {
     public:
-        SwitchToScreenAction(IEventQueue* events, const std::string& screen);
+        SwitchToScreenAction(IEventQueue* events, const std::string& screen,
+                             SInt32 monitorIndex = -1);
 
         std::string getScreen() const;
+        SInt32 getMonitorIndex() const;
 
         // Action overrides
         virtual Action*        clone() const;
@@ -163,6 +165,7 @@ public:
 
     private:
         std::string                    m_screen;
+        SInt32                  m_monitorIndex;
         IEventQueue*            m_events;
     };
 

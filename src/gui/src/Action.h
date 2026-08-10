@@ -59,6 +59,8 @@ class Action
 
         const QString& switchScreenName() const { return m_SwitchScreenName; }
         void setSwitchScreenName(const QString& n) { m_SwitchScreenName = n; }
+        int switchScreenMonitor() const { return m_SwitchScreenMonitor; }
+        void setSwitchScreenMonitor(int monitor) { m_SwitchScreenMonitor = monitor; }
 
         int switchDirection() const { return m_SwitchDirection; }
         void setSwitchDirection(int d) { m_SwitchDirection = d; }
@@ -77,6 +79,7 @@ class Action
         int m_Type;
         QStringList m_TypeScreenNames;
         QString m_SwitchScreenName;
+        int m_SwitchScreenMonitor;
         int m_SwitchDirection;
         int m_LockCursorMode;
         bool m_ActiveOnRelease;

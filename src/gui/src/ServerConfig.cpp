@@ -52,6 +52,8 @@ ServerConfig::ServerConfig(QSettings* settings, int numColumns, int numRows ,
     m_IgnoreAutoConfigClient(false),
     m_EnableDragAndDrop(false),
     m_ClipboardSharing(true),
+    m_UdpMouse(false),
+    m_UdpSyncMs(500),
     m_pMainWindow(mainWindow)
 {
     Q_ASSERT(m_pSettings);
@@ -119,6 +121,8 @@ void ServerConfig::saveSettings()
     settings().setValue("ignoreAutoConfigClient", ignoreAutoConfigClient());
     settings().setValue("enableDragAndDrop", enableDragAndDrop());
     settings().setValue("clipboardSharing", clipboardSharing());
+    settings().setValue("udpMouse", udpMouse());
+    settings().setValue("udpSyncMs", udpSyncMs());
 
     writeSettings<bool>(settings(), switchCorners(), "switchCorner");
 
@@ -135,6 +139,57 @@ void ServerConfig::saveSettings()
     {
         settings().setArrayIndex(i);
         hotkeys()[i].saveSettings(settings());
+    }
+    settings().endArray();
+
+    settings().beginWriteArray("linkConfigs");
+    {
+        int idx = 0;
+        for (auto it = m_LinkConfigs.constBegin(); it != m_LinkConfigs.constEnd(); ++it, ++idx)
+        {
+            settings().setArrayIndex(idx);
+            settings().setValue("key", it.key());
+            settings().setValue("srcStart", it.value().srcStart);
+            settings().setValue("srcEnd", it.value().srcEnd);
+            settings().setValue("dstStart", it.value().dstStart);
+            settings().setValue("dstEnd", it.value().dstEnd);
+            settings().setValue("monitorIndex", it.value().monitorIndex);
+            settings().setValue("srcMonitorIndex", it.value().srcMonitorIndex);
+        }
+    }
+    settings().endArray();
+
+    settings().beginWriteArray("explicitLinks");
+    for (int i = 0; i < m_ExplicitLinks.size(); i++)
+    {
+        settings().setArrayIndex(i);
+        const ExplicitLink& el = m_ExplicitLinks[i];
+        settings().setValue("srcScreen", el.srcScreen);
+        settings().setValue("dstScreen", el.dstScreen);
+        settings().setValue("direction", el.direction);
+        settings().setValue("srcStart", el.config.srcStart);
+        settings().setValue("srcEnd", el.config.srcEnd);
+        settings().setValue("dstStart", el.config.dstStart);
+        settings().setValue("dstEnd", el.config.dstEnd);
+        settings().setValue("monitorIndex", el.config.monitorIndex);
+        settings().setValue("srcMonitorIndex", el.config.srcMonitorIndex);
+    }
+    settings().endArray();
+
+    settings().beginWriteArray("displayPositions");
+    {
+        int idx = 0;
+        for (auto it = m_DisplayPositions.constBegin(); it != m_DisplayPositions.constEnd(); ++it, ++idx)
+        {
+            settings().setArrayIndex(idx);
+            settings().setValue("name", it.key());
+            settings().setValue("x", it.value().x());
+            settings().setValue("y", it.value().y());
+            if (m_DisplaySizes.contains(it.key())) {
+                settings().setValue("w", m_DisplaySizes[it.key()].width());
+                settings().setValue("h", m_DisplaySizes[it.key()].height());
+            }
+        }
     }
     settings().endArray();
 
@@ -164,6 +219,8 @@ void ServerConfig::loadSettings()
     setIgnoreAutoConfigClient(settings().value("ignoreAutoConfigClient").toBool());
     setEnableDragAndDrop(settings().value("enableDragAndDrop", true).toBool());
     setClipboardSharing(settings().value("clipboardSharing", true).toBool());
+    setUdpMouse(settings().value("udpMouse", false).toBool());
+    setUdpSyncMs(settings().value("udpSyncMs", 500).toInt());
 
     readSettings<bool>(settings(), switchCorners(), "switchCorner", false,
                        static_cast<int>(SwitchCorner::Count));
@@ -186,6 +243,70 @@ void ServerConfig::loadSettings()
         hotkeys().push_back(h);
     }
     settings().endArray();
+
+    int numLinkConfigs = settings().beginReadArray("linkConfigs");
+    m_LinkConfigs.clear();
+    for (int i = 0; i < numLinkConfigs; i++)
+    {
+        settings().setArrayIndex(i);
+        QString key = settings().value("key").toString();
+        LinkConfig lc;
+        lc.srcStart = settings().value("srcStart", 0).toInt();
+        lc.srcEnd = settings().value("srcEnd", 100).toInt();
+        lc.dstStart = settings().value("dstStart", 0).toInt();
+        lc.dstEnd = settings().value("dstEnd", 100).toInt();
+        lc.monitorIndex = settings().value("monitorIndex", -1).toInt();
+        lc.srcMonitorIndex = settings().value("srcMonitorIndex", -1).toInt();
+        if (!lc.isDefault())
+            m_LinkConfigs[key] = lc;
+    }
+    settings().endArray();
+
+    int numExplicitLinks = settings().beginReadArray("explicitLinks");
+    m_ExplicitLinks.clear();
+    for (int i = 0; i < numExplicitLinks; i++)
+    {
+        settings().setArrayIndex(i);
+        ExplicitLink el;
+        el.srcScreen = settings().value("srcScreen").toString();
+        el.dstScreen = settings().value("dstScreen").toString();
+        el.direction = settings().value("direction").toString();
+        el.config.srcStart = settings().value("srcStart", 0).toInt();
+        el.config.srcEnd = settings().value("srcEnd", 100).toInt();
+        el.config.dstStart = settings().value("dstStart", 0).toInt();
+        el.config.dstEnd = settings().value("dstEnd", 100).toInt();
+        el.config.monitorIndex = settings().value("monitorIndex", -1).toInt();
+        el.config.srcMonitorIndex = settings().value("srcMonitorIndex", -1).toInt();
+        m_ExplicitLinks.append(el);
+    }
+    settings().endArray();
+
+    int numDisplayPos = settings().beginReadArray("displayPositions");
+    m_DisplayPositions.clear();
+    m_DisplaySizes.clear();
+    for (int i = 0; i < numDisplayPos; i++)
+    {
+        settings().setArrayIndex(i);
+        QString name = settings().value("name").toString();
+        qreal x = settings().value("x", 0).toDouble();
+        qreal y = settings().value("y", 0).toDouble();
+        m_DisplayPositions[name] = QPointF(x, y);
+        qreal w = settings().value("w", 0).toDouble();
+        qreal h = settings().value("h", 0).toDouble();
+        if (w > 0 && h > 0)
+            m_DisplaySizes[name] = QSizeF(w, h);
+    }
+    settings().endArray();
+
+    // prune stale explicit links that reference screens no longer in the config
+    if (!m_ExplicitLinks.isEmpty()) {
+        QList<ExplicitLink> valid;
+        for (const ExplicitLink& el : m_ExplicitLinks) {
+            if (hasScreen(el.srcScreen) && hasScreen(el.dstScreen))
+                valid.append(el);
+        }
+        m_ExplicitLinks = valid;
+    }
 
     settings().endGroup();
 }
@@ -230,18 +351,75 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
 
     outStream << "section: links" << endl;
 
-    for (int i = 0; i < config.screens().size(); i++)
-        if (!config.screens()[i].isNull())
-        {
-            outStream << "\t" << config.screens()[i].name() << ":" << endl;
+    if (!config.explicitLinks().isEmpty())
+    {
+        // use explicit links from visual display layout
+        // group by (srcScreen, srcMonitorIndex)
+        struct GroupKey {
+            QString screen;
+            int srcMonitorIndex;
+            bool operator<(const GroupKey& o) const {
+                if (screen != o.screen) return screen < o.screen;
+                return srcMonitorIndex < o.srcMonitorIndex;
+            }
+        };
+        QMap<GroupKey, QList<const ServerConfig::ExplicitLink*>> groups;
+        for (const ServerConfig::ExplicitLink& el : config.explicitLinks()) {
+            GroupKey key = { el.srcScreen, el.config.srcMonitorIndex };
+            groups[key].append(&el);
+        }
 
-            for (unsigned int j = 0; j < sizeof(neighbourDirs) / sizeof(neighbourDirs[0]); j++)
-            {
-                int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
-                if (idx != -1 && !config.screens()[idx].isNull())
-                    outStream << "\t\t" << neighbourDirs[j].name << " = " << config.screens()[idx].name() << endl;
+        for (auto it = groups.constBegin(); it != groups.constEnd(); ++it) {
+            if (it.key().srcMonitorIndex < 0) {
+                outStream << "\t" << it.key().screen << ":" << endl;
+            } else {
+                outStream << "\t" << it.key().screen << "@" << it.key().srcMonitorIndex << ":" << endl;
+            }
+
+            for (const ServerConfig::ExplicitLink* el : it.value()) {
+                const LinkConfig& lc = el->config;
+                outStream << "\t\t" << el->direction;
+                if (lc.srcStart != 0 || lc.srcEnd != 100)
+                    outStream << "(" << lc.srcStart << "," << lc.srcEnd << ")";
+                outStream << " = " << el->dstScreen;
+                if (lc.monitorIndex >= 0)
+                    outStream << "@" << lc.monitorIndex;
+                if (lc.dstStart != 0 || lc.dstEnd != 100)
+                    outStream << "(" << lc.dstStart << "," << lc.dstEnd << ")";
+                outStream << endl;
             }
         }
+    }
+    else
+    {
+        // fallback: grid-based links
+        for (int i = 0; i < config.screens().size(); i++)
+            if (!config.screens()[i].isNull())
+            {
+                outStream << "\t" << config.screens()[i].name() << ":" << endl;
+
+                for (unsigned int j = 0; j < sizeof(neighbourDirs) / sizeof(neighbourDirs[0]); j++)
+                {
+                    int idx = config.adjacentScreenIndex(i, neighbourDirs[j].x, neighbourDirs[j].y);
+                    if (idx != -1 && !config.screens()[idx].isNull())
+                    {
+                        LinkConfig lc = config.linkConfig(
+                            config.screens()[i].name(),
+                            QString(neighbourDirs[j].name));
+
+                        outStream << "\t\t" << neighbourDirs[j].name;
+                        if (lc.srcStart != 0 || lc.srcEnd != 100)
+                            outStream << "(" << lc.srcStart << "," << lc.srcEnd << ")";
+                        outStream << " = " << config.screens()[idx].name();
+                        if (lc.monitorIndex >= 0)
+                            outStream << "@" << lc.monitorIndex;
+                        if (lc.dstStart != 0 || lc.dstEnd != 100)
+                            outStream << "(" << lc.dstStart << "," << lc.dstEnd << ")";
+                        outStream << endl;
+                    }
+                }
+            }
+    }
 
     outStream << "end" << endl << endl;
 
@@ -254,6 +432,8 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
     outStream << "\t" << "screenSaverSync = " << (config.screenSaverSync() ? "true" : "false") << endl;
     outStream << "\t" << "win32KeepForeground = " << (config.win32KeepForeground() ? "true" : "false") << endl;
     outStream << "\t" << "clipboardSharing = " << (config.clipboardSharing() ? "true" : "false") << endl;
+    outStream << "\t" << "udpMouse = " << (config.udpMouse() ? "true" : "false") << endl;
+    outStream << "\t" << "udpSyncMs = " << config.udpSyncMs() << endl;
 
     if (config.hasSwitchDelay())
         outStream << "\t" << "switchDelay = " << config.switchDelay() << endl;
@@ -279,6 +459,66 @@ QTextStream& operator<<(QTextStream& outStream, const ServerConfig& config)
     outStream << "end" << endl << endl;
 
     return outStream;
+}
+
+bool ServerConfig::hasScreen(const QString& name) const
+{
+    for (const Screen& s : screens()) {
+        if (!s.isNull() && s.name().compare(name, Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
+}
+
+void ServerConfig::ensureScreen(const QString& name)
+{
+    if (hasScreen(name))
+        return;
+    // find an empty grid slot
+    for (int i = 0; i < screens().size(); ++i) {
+        if (screens()[i].isNull()) {
+            m_Screens[i].setName(name);
+            return;
+        }
+    }
+    // grid is full — expand it by adding a column
+    m_NumColumns++;
+    // insert one empty screen per row at the end of each row
+    // (the grid is stored as a flat vector: row-major)
+    std::vector<Screen> newScreens;
+    newScreens.reserve(m_NumColumns * m_NumRows);
+    int oldCols = m_NumColumns - 1;
+    for (int r = 0; r < m_NumRows; ++r) {
+        for (int c = 0; c < oldCols; ++c)
+            newScreens.push_back(m_Screens[r * oldCols + c]);
+        newScreens.push_back(Screen()); // new empty column
+    }
+    m_Screens = newScreens;
+    // now try again — there are empty slots
+    for (int i = 0; i < m_Screens.size(); ++i) {
+        if (m_Screens[i].isNull()) {
+            m_Screens[i].setName(name);
+            return;
+        }
+    }
+}
+
+LinkConfig ServerConfig::linkConfig(const QString& screenName, const QString& direction) const
+{
+    QString key = linkConfigKey(screenName, direction);
+    if (m_LinkConfigs.contains(key))
+        return m_LinkConfigs[key];
+    return LinkConfig();
+}
+
+void ServerConfig::setLinkConfig(const QString& screenName, const QString& direction,
+                                  const LinkConfig& config)
+{
+    QString key = linkConfigKey(screenName, direction);
+    if (config.isDefault())
+        m_LinkConfigs.remove(key);
+    else
+        m_LinkConfigs[key] = config;
 }
 
 int ServerConfig::numScreens() const

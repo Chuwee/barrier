@@ -19,6 +19,7 @@
 #pragma once
 
 #include "barrier/IClient.h"
+#include "barrier/protocol_types.h"
 
 #include "barrier/Clipboard.h"
 #include "barrier/DragInformation.h"
@@ -139,6 +140,10 @@ public:
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
+    virtual void        getMonitors(std::vector<MonitorGeometry>& monitors) const;
+
+    //! Get server protocol minor version
+    SInt16              getServerProtocolMinor() const { return m_serverProtocolMinor; }
 
     // IClient overrides
     virtual void        enter(SInt32 xAbs, SInt32 yAbs,
@@ -224,4 +229,5 @@ private:
     bool                m_useSecureNetwork;
     ClientArgs            m_args;
     bool                m_enableClipboard;
+    SInt16                m_serverProtocolMinor;
 };

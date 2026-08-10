@@ -43,6 +43,11 @@
 #include "base/Log.h"
 #include "base/TMethodEventJob.h"
 
+#include "net/UDPSocket.h"
+#include "net/P2PTransport.h"
+#include "platform/AWDLTransport.h"
+#include "barrier/ProtocolUtil.h"
+
 #include <cstring>
 #include <cstdlib>
 #include <sstream>
@@ -92,7 +97,12 @@ Server::Server(
 	m_enableClipboard(true),
 	m_sendDragInfoThread(NULL),
 	m_waitDragInfoThread(true),
-	m_args(args)
+	m_args(args),
+	m_udpSocket(NULL),
+	m_udpMouseEnabled(false),
+	m_udpSeqNum(0),
+	m_udpSyncInterval(0.5),
+	m_p2pTransport(NULL)
 {
 	// must have a primary client and it must have a canonical name
 	assert(m_primaryClient != NULL);
@@ -249,6 +259,14 @@ Server::~Server()
 	m_events->removeHandler(Event::kTimer, this);
 	stopSwitch();
 
+	// clean up P2P transport
+	delete m_p2pTransport;
+	m_p2pTransport = NULL;
+
+	// clean up UDP socket
+	delete m_udpSocket;
+	m_udpSocket = NULL;
+
 	// force immediate disconnection of secondary clients
 	disconnect();
 	for (OldClients::iterator index = m_oldClients.begin();
@@ -339,6 +357,17 @@ Server::adoptClient(BaseClientProxy* client)
 
 	// send configuration options to client
 	sendOptions(client);
+
+	// if UDP mouse channel is enabled, tell the client the UDP port
+	if (m_udpMouseEnabled && m_udpSocket != NULL) {
+		barrier::IStream* stream = client->getStream();
+		if (stream != NULL) {
+			LOG((CLOG_DEBUG "sending UDP port %d to client \"%s\"",
+				 kDefaultUdpPort, getName(client).c_str()));
+			ProtocolUtil::writef(stream, kMsgDUdpPort,
+				static_cast<SInt16>(kDefaultUdpPort));
+		}
+	}
 
 	// activate screen saver on new client if active on the primary screen
 	if (m_activeSaver != NULL) {
@@ -539,6 +568,34 @@ Server::jumpToScreen(BaseClientProxy* newScreen)
 	switchScreen(newScreen, x, y, false);
 }
 
+void
+Server::jumpToScreen(BaseClientProxy* newScreen, SInt32 monitorIndex)
+{
+	assert(newScreen != NULL);
+
+	std::vector<MonitorGeometry> monitors;
+	newScreen->getMonitors(monitors);
+	if (monitorIndex < 0 || monitorIndex >= static_cast<SInt32>(monitors.size())) {
+		LOG((CLOG_WARN "cannot switch to monitor %d on screen \"%s\": monitor is unavailable",
+			monitorIndex, getName(newScreen).c_str()));
+		return;
+	}
+
+	const MonitorGeometry& monitor = monitors[monitorIndex];
+	if (monitor.m_w <= 0 || monitor.m_h <= 0) {
+		LOG((CLOG_WARN "cannot switch to monitor %d on screen \"%s\": invalid geometry",
+			monitorIndex, getName(newScreen).c_str()));
+		return;
+	}
+
+	// Preserve the normal return position, but make explicit monitor targets
+	// deterministic instead of using another monitor's last cursor position.
+	m_active->setJumpCursorPos(m_x, m_y);
+	SInt32 x = monitor.m_x + monitor.m_w / 2;
+	SInt32 y = monitor.m_y + monitor.m_h / 2;
+	switchScreen(newScreen, x, y, false);
+}
+
 float
 Server::mapToFraction(BaseClientProxy* client,
 				EDirection dir, SInt32 x, SInt32 y) const
@@ -584,21 +641,254 @@ Server::mapToPixel(BaseClientProxy* client,
 	}
 }
 
+void
+Server::mapToPixelOnMonitor(BaseClientProxy* client,
+				EDirection dir, float f, SInt32 monitorIndex,
+				SInt32& x, SInt32& y) const
+{
+	std::vector<MonitorGeometry> monitors;
+	client->getMonitors(monitors);
+
+	if (monitorIndex < 0 || monitorIndex >= (SInt32)monitors.size()) {
+		// fallback to combined screen
+		mapToPixel(client, dir, f, x, y);
+		return;
+	}
+
+	// dir is the direction of travel. The cursor enters the destination
+	// from the opposite side: traveling right → enter from left edge, etc.
+	const MonitorGeometry& mg = monitors[monitorIndex];
+	switch (dir) {
+	case kLeft:
+		// traveling left → enter from right edge of target monitor
+		x = mg.m_x + mg.m_w - 1;
+		y = static_cast<SInt32>(f * mg.m_h) + mg.m_y;
+		break;
+
+	case kRight:
+		// traveling right → enter from left edge of target monitor
+		x = mg.m_x;
+		y = static_cast<SInt32>(f * mg.m_h) + mg.m_y;
+		break;
+
+	case kTop:
+		// traveling up → enter from bottom edge of target monitor
+		y = mg.m_y + mg.m_h - 1;
+		x = static_cast<SInt32>(f * mg.m_w) + mg.m_x;
+		break;
+
+	case kBottom:
+		// traveling down → enter from top edge of target monitor
+		y = mg.m_y;
+		x = static_cast<SInt32>(f * mg.m_w) + mg.m_x;
+		break;
+
+	case kNoDirection:
+		assert(0 && "bad direction");
+		break;
+	}
+}
+
+bool
+Server::checkInternalMonitorEdge(SInt32 x, SInt32 y,
+				EDirection& dir, SInt32& monitorIndex) const
+{
+	std::vector<MonitorGeometry> monitors;
+	m_primaryClient->getMonitors(monitors);
+
+	if (monitors.size() <= 1) {
+		return false;
+	}
+
+	// get combined screen shape
+	SInt32 ax, ay, aw, ah;
+	m_active->getShape(ax, ay, aw, ah);
+
+	// previous position — use crossing test so fast mouse motion
+	// that jumps over the seam is still detected
+	SInt32 px = x - m_xDelta;
+	SInt32 py = y - m_yDelta;
+
+	std::string srcName = getName(m_primaryClient);
+
+	for (SInt32 i = 0; i < (SInt32)monitors.size(); ++i) {
+		const MonitorGeometry& mg = monitors[i];
+		SInt32 mRight  = mg.m_x + mg.m_w;  // first pixel past right edge
+		SInt32 mBottom = mg.m_y + mg.m_h;   // first pixel past bottom edge
+
+		// right internal edge: cursor crossed from inside this monitor
+		// to at-or-past its right boundary, and it's not the combined
+		// screen's outer right edge
+		if (mRight < ax + aw &&             // internal edge
+			px < mRight && x >= mRight - 1 && // crossed the seam
+			m_xDelta > 0 &&
+			y >= mg.m_y && y < mBottom) {
+			if (m_config->hasNeighbor(srcName, kRight, i)) {
+				dir = kRight;
+				monitorIndex = i;
+				return true;
+			}
+		}
+
+		// left internal edge: cursor crossed from inside this monitor
+		// to at-or-past its left boundary
+		if (mg.m_x > ax &&                  // internal edge
+			px >= mg.m_x && x <= mg.m_x &&  // crossed the seam
+			m_xDelta < 0 &&
+			y >= mg.m_y && y < mBottom) {
+			if (m_config->hasNeighbor(srcName, kLeft, i)) {
+				dir = kLeft;
+				monitorIndex = i;
+				return true;
+			}
+		}
+
+		// top internal edge
+		if (mg.m_y > ay &&
+			py >= mg.m_y && y <= mg.m_y &&
+			m_yDelta < 0 &&
+			x >= mg.m_x && x < mRight) {
+			if (m_config->hasNeighbor(srcName, kTop, i)) {
+				dir = kTop;
+				monitorIndex = i;
+				return true;
+			}
+		}
+
+		// bottom internal edge
+		if (mBottom < ay + ah &&
+			py < mBottom && y >= mBottom - 1 &&
+			m_yDelta > 0 &&
+			x >= mg.m_x && x < mRight) {
+			if (m_config->hasNeighbor(srcName, kBottom, i)) {
+				dir = kBottom;
+				monitorIndex = i;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+BaseClientProxy*
+Server::getNeighborFromMonitor(BaseClientProxy* src,
+				EDirection dir, SInt32 srcMonitorIndex,
+				SInt32& x, SInt32& y) const
+{
+	assert(src != NULL);
+
+	std::string srcName = getName(src);
+	assert(!srcName.empty());
+
+	// get monitors to compute fraction relative to the specific monitor
+	std::vector<MonitorGeometry> monitors;
+	src->getMonitors(monitors);
+
+	if (srcMonitorIndex < 0 || srcMonitorIndex >= (SInt32)monitors.size()) {
+		return NULL;
+	}
+
+	const MonitorGeometry& mg = monitors[srcMonitorIndex];
+
+	// compute fraction relative to the specific monitor
+	float t;
+	switch (dir) {
+	case kLeft:
+	case kRight:
+		t = static_cast<float>(y - mg.m_y + 0.5f) / static_cast<float>(mg.m_h);
+		break;
+	case kTop:
+	case kBottom:
+		t = static_cast<float>(x - mg.m_x + 0.5f) / static_cast<float>(mg.m_w);
+		break;
+	default:
+		return NULL;
+	}
+
+	// clamp
+	if (t < 0.0f) t = 0.0f;
+	if (t > 1.0f) t = 1.0f;
+
+	float tOut;
+	SInt32 dstMonitorIndex = -1;
+	std::string dstName = m_config->getNeighbor(srcName, dir, t, &tOut,
+												srcMonitorIndex, &dstMonitorIndex);
+
+	if (dstName.empty()) {
+		return NULL;
+	}
+
+	// look up destination client
+	ClientList::const_iterator index = m_clients.find(dstName);
+	if (index == m_clients.end()) {
+		return NULL;
+	}
+
+	// map to pixels
+	if (dstMonitorIndex >= 0) {
+		mapToPixelOnMonitor(index->second, dir, tOut, dstMonitorIndex, x, y);
+	}
+	else {
+		// mapToPixel only sets the perpendicular coordinate.
+		// we must also set the entry edge coordinate.
+		mapToPixel(index->second, dir, tOut, x, y);
+		SInt32 dx, dy, dw, dh;
+		index->second->getShape(dx, dy, dw, dh);
+		switch (dir) {
+		case kLeft:  x = dx + dw - 1; break;  // enter from right
+		case kRight: x = dx;           break;  // enter from left
+		case kTop:   y = dy + dh - 1;  break;  // enter from bottom
+		case kBottom:y = dy;            break;  // enter from top
+		default: break;
+		}
+	}
+
+	avoidJumpZone(index->second, dir, x, y);
+	return index->second;
+}
+
 bool
 Server::hasAnyNeighbor(BaseClientProxy* client, EDirection dir) const
 {
 	assert(client != NULL);
 
-	return m_config->hasNeighbor(getName(client), dir);
+	std::string name = getName(client);
+
+	// check whole-screen edges
+	if (m_config->hasNeighbor(name, dir)) {
+		return true;
+	}
+
+	// also check monitor-specific edges
+	std::vector<MonitorGeometry> monitors;
+	client->getMonitors(monitors);
+	for (SInt32 i = 0; i < (SInt32)monitors.size(); ++i) {
+		if (m_config->hasNeighbor(name, dir, i)) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 BaseClientProxy*
 Server::getNeighbor(BaseClientProxy* src,
 				EDirection dir, SInt32& x, SInt32& y) const
 {
+	bool unused;
+	return getNeighbor(src, dir, x, y, unused);
+}
+
+BaseClientProxy*
+Server::getNeighbor(BaseClientProxy* src,
+				EDirection dir, SInt32& x, SInt32& y,
+				bool& usedMonitorTarget) const
+{
 	// note -- must be locked on entry
 
 	assert(src != NULL);
+	usedMonitorTarget = false;
 
 	// get source screen name
     std::string srcName = getName(src);
@@ -610,8 +900,9 @@ Server::getNeighbor(BaseClientProxy* src,
 
 	// search for the closest neighbor that exists in direction dir
 	float tTmp;
+	SInt32 monitorIndex = -1;
 	for (;;) {
-        std::string dstName(m_config->getNeighbor(srcName, dir, t, &tTmp));
+        std::string dstName(m_config->getNeighbor(srcName, dir, t, &tTmp, &monitorIndex));
 
 		// if nothing in that direction then return NULL. if the
 		// destination is the source then we can make no more
@@ -627,7 +918,13 @@ Server::getNeighbor(BaseClientProxy* src,
 		ClientList::const_iterator index = m_clients.find(dstName);
 		if (index != m_clients.end()) {
 			LOG((CLOG_DEBUG2 "\"%s\" is on %s of \"%s\" at %f", dstName.c_str(), Config::dirName(dir), srcName.c_str(), t));
-			mapToPixel(index->second, dir, tTmp, x, y);
+			if (monitorIndex >= 0) {
+				mapToPixelOnMonitor(index->second, dir, tTmp, monitorIndex, x, y);
+				usedMonitorTarget = true;
+			}
+			else {
+				mapToPixel(index->second, dir, tTmp, x, y);
+			}
 			return index->second;
 		}
 
@@ -648,10 +945,63 @@ Server::mapToNeighbor(BaseClientProxy* src,
 
 	assert(src != NULL);
 
+	// Visual-layout links from local displays are keyed by source monitor.
+	// Resolve an outer edge against the monitor under the cursor before
+	// falling back to legacy whole-screen links.
+	SInt32 sx, sy, sw, sh;
+	src->getShape(sx, sy, sw, sh);
+	std::vector<MonitorGeometry> monitors;
+	src->getMonitors(monitors);
+	for (SInt32 i = 0; i < (SInt32)monitors.size(); ++i) {
+		const MonitorGeometry& monitor = monitors[i];
+		bool atOuterEdge = false;
+		bool inEdgeSpan = false;
+		switch (srcSide) {
+		case kLeft:
+			atOuterEdge = monitor.m_x == sx;
+			inEdgeSpan = y >= monitor.m_y && y < monitor.m_y + monitor.m_h;
+			break;
+		case kRight:
+			atOuterEdge = monitor.m_x + monitor.m_w == sx + sw;
+			inEdgeSpan = y >= monitor.m_y && y < monitor.m_y + monitor.m_h;
+			break;
+		case kTop:
+			atOuterEdge = monitor.m_y == sy;
+			inEdgeSpan = x >= monitor.m_x && x < monitor.m_x + monitor.m_w;
+			break;
+		case kBottom:
+			atOuterEdge = monitor.m_y + monitor.m_h == sy + sh;
+			inEdgeSpan = x >= monitor.m_x && x < monitor.m_x + monitor.m_w;
+			break;
+		default:
+			break;
+		}
+
+		if (atOuterEdge && inEdgeSpan) {
+			SInt32 monitorX = x;
+			SInt32 monitorY = y;
+			BaseClientProxy* monitorDst = getNeighborFromMonitor(
+				src, srcSide, i, monitorX, monitorY);
+			if (monitorDst != NULL) {
+				x = monitorX;
+				y = monitorY;
+				return monitorDst;
+			}
+		}
+	}
+
 	// get the first neighbor
-	BaseClientProxy* dst = getNeighbor(src, srcSide, x, y);
+	bool usedMonitorTarget = false;
+	BaseClientProxy* dst = getNeighbor(src, srcSide, x, y, usedMonitorTarget);
 	if (dst == NULL) {
 		return NULL;
+	}
+
+	// if monitor-specific targeting was used, x,y are already exact
+	// pixel coordinates on the target monitor — skip the walk-through
+	if (usedMonitorTarget) {
+		avoidJumpZone(dst, srcSide, x, y);
+		return dst;
 	}
 
 	// get the source screen's size
@@ -1177,6 +1527,58 @@ Server::processOptions()
 				LOG((CLOG_NOTE "clipboard sharing is disabled"));
 			}
 		}
+		else if (id == kOptionUdpMouseChannel) {
+			bool wantUdp = (value != 0);
+			if (wantUdp && !m_udpMouseEnabled) {
+				// create and bind the UDP socket
+				m_udpSocket = new UDPSocket();
+				if (m_udpSocket->bind(kDefaultUdpPort)) {
+					m_udpMouseEnabled = true;
+					m_udpSeqNum = 0;
+					m_udpSyncTimer.reset();
+					LOG((CLOG_NOTE "UDP mouse channel enabled on port %d", kDefaultUdpPort));
+
+					// also try to start P2P transport (AWDL on macOS)
+					// only attempt if UDP actually succeeded
+					if (m_p2pTransport == NULL) {
+						m_p2pTransport = new AWDLTransport();
+						std::string serverName = getName(m_primaryClient);
+						if (m_p2pTransport->start(serverName,
+								kDefaultP2pPort)) {
+							LOG((CLOG_NOTE "P2P (AWDL) transport started"));
+						}
+						else {
+							LOG((CLOG_NOTE "P2P transport unavailable, using regular UDP"));
+							delete m_p2pTransport;
+							m_p2pTransport = NULL;
+						}
+					}
+				}
+				else {
+					LOG((CLOG_WARN "failed to bind UDP socket, UDP mouse channel disabled"));
+					delete m_udpSocket;
+					m_udpSocket = NULL;
+					m_udpMouseEnabled = false;
+				}
+			}
+			else if (!wantUdp && m_udpMouseEnabled) {
+				LOG((CLOG_NOTE "UDP mouse channel disabled"));
+				delete m_udpSocket;
+				m_udpSocket = NULL;
+				m_udpMouseEnabled = false;
+				m_udpClients.clear();
+
+				// stop P2P transport too
+				delete m_p2pTransport;
+				m_p2pTransport = NULL;
+			}
+		}
+		else if (id == kOptionUdpSyncMs) {
+			m_udpSyncInterval = value * 0.001;
+			if (m_udpSyncInterval < 0.0) m_udpSyncInterval = 0.0;
+			LOG((CLOG_DEBUG "UDP sync interval set to %.0f ms",
+				 m_udpSyncInterval * 1000.0));
+		}
 	}
 	if (m_relativeMoves && !newRelativeMoves) {
 		stopRelativeMoves();
@@ -1404,7 +1806,18 @@ Server::handleSwitchToScreenEvent(const Event& event, void*)
 		LOG((CLOG_DEBUG1 "screen \"%s\" not active", info->m_screen));
 	}
 	else {
-		jumpToScreen(index->second);
+		if (info->m_monitorIndex >= 0) {
+			// Local monitor navigation remains the operating system's job.
+			if (index->second == m_active) {
+				LOG((CLOG_DEBUG1 "screen \"%s\" is already active; ignoring monitor switch",
+					info->m_screen));
+				return;
+			}
+			jumpToScreen(index->second, info->m_monitorIndex);
+		}
+		else {
+			jumpToScreen(index->second);
+		}
 	}
 }
 
@@ -1798,7 +2211,18 @@ Server::onMouseMovePrimary(SInt32 x, SInt32 y)
 		dirv = kBottom;
 	}
 	if (dirh == kNoDirection && dirv == kNoDirection) {
-		// still on local screen
+		// check for internal monitor edge crossings
+		EDirection internalDir;
+		SInt32 srcMonIdx;
+		if (checkInternalMonitorEdge(x, y, internalDir, srcMonIdx)) {
+			SInt32 xSwitch = x, ySwitch = y;
+			BaseClientProxy* newScreen = getNeighborFromMonitor(
+				m_active, internalDir, srcMonIdx, xSwitch, ySwitch);
+			if (isSwitchOkay(newScreen, internalDir, xSwitch, ySwitch, xc, yc)) {
+				switchScreen(newScreen, xSwitch, ySwitch, false);
+				return true;
+			}
+		}
 		noSwitch(x, y);
 		return false;
 	}
@@ -1906,7 +2330,9 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 	// have no idea where it really is.
 	if (m_relativeMoves && isLockedToScreenServer()) {
 		LOG((CLOG_DEBUG2 "relative move on %s by %d,%d", getName(m_active).c_str(), dx, dy));
-		m_active->mouseRelativeMove(dx, dy);
+		if (!m_udpMouseEnabled || !sendUdpDatagram(0x01, dx, dy)) {
+			m_active->mouseRelativeMove(dx, dy);
+		}
 		return;
 	}
 
@@ -2050,7 +2476,21 @@ Server::onMouseMoveSecondary(SInt32 dx, SInt32 dy)
 		// warp cursor if it moved.
 		if (m_x != xOld || m_y != yOld) {
 			LOG((CLOG_DEBUG2 "move on %s to %d,%d", getName(m_active).c_str(), m_x, m_y));
-			m_active->mouseMove(m_x, m_y);
+			const SInt32 sentDx = m_x - xOld;
+			const SInt32 sentDy = m_y - yOld;
+			bool sentLowLatency = m_udpMouseEnabled &&
+				m_active != m_primaryClient &&
+				sendUdpDatagram(0x01, sentDx, sentDy);
+			if (!sentLowLatency) {
+				// TCP fallback (UDP not ready or not enabled)
+				m_active->mouseMove(m_x, m_y);
+			}
+			else if (m_udpSyncInterval > 0.0 &&
+					m_udpSyncTimer.getTime() >= m_udpSyncInterval &&
+					sendUdpDatagram(0x02, m_x, m_y)) {
+				// Periodically send an absolute position to correct UDP drift.
+				m_udpSyncTimer.reset();
+			}
 		}
 	}
 }
@@ -2292,6 +2732,91 @@ Server::forceLeaveClient(BaseClientProxy* client)
 
 
 //
+// Server UDP mouse channel
+//
+
+bool
+Server::sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b)
+{
+	if (!m_udpMouseEnabled)
+		return false;
+
+	// build the 20-byte datagram first (shared by P2P and regular UDP)
+	// format: [type:1][pad:1][seq:4][a:4][b:4][ts:4][pad:2]
+	UInt8 buf[20];
+	std::memset(buf, 0, sizeof(buf));
+	buf[0] = type;
+	UInt32 seq = ++m_udpSeqNum;
+	buf[2] = static_cast<UInt8>(seq >> 24);
+	buf[3] = static_cast<UInt8>(seq >> 16);
+	buf[4] = static_cast<UInt8>(seq >> 8);
+	buf[5] = static_cast<UInt8>(seq);
+	buf[6]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 24);
+	buf[7]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 16);
+	buf[8]  = static_cast<UInt8>(static_cast<UInt32>(a) >> 8);
+	buf[9]  = static_cast<UInt8>(static_cast<UInt32>(a));
+	buf[10] = static_cast<UInt8>(static_cast<UInt32>(b) >> 24);
+	buf[11] = static_cast<UInt8>(static_cast<UInt32>(b) >> 16);
+	buf[12] = static_cast<UInt8>(static_cast<UInt32>(b) >> 8);
+	buf[13] = static_cast<UInt8>(static_cast<UInt32>(b));
+
+	// Transport registration uses the exact name sent by the connected client.
+	// The configured canonical name may differ by alias or letter case.
+	std::string activeName = m_active->getName();
+
+	// try P2P transport first (lowest latency — bypasses router)
+	// only skip the regular UDP path if the P2P send actually succeeds;
+	// transient failures (interface flap, ENETDOWN, etc.) fall through.
+	if (m_p2pTransport && m_p2pTransport->isActive()) {
+		struct sockaddr_in6 peerAddr;
+		if (m_p2pTransport->findPeer(activeName, peerAddr)) {
+			UDPSocket* p2pSock = m_p2pTransport->getSocket();
+			if (p2pSock) {
+				int sent = p2pSock->sendToIPv6(buf, sizeof(buf), peerAddr);
+				if (sent == sizeof(buf)) {
+					LOG((CLOG_DEBUG2 "sent via P2P to %s", activeName.c_str()));
+					return true;
+				}
+				LOG((CLOG_DEBUG "P2P send failed, falling back to UDP"));
+			}
+		}
+	}
+
+	// fall back to regular UDP
+	if (!m_udpSocket)
+		return false;
+
+	// drain any incoming hello datagrams to register client addresses
+	{
+		UInt8 hbuf[256];
+		struct sockaddr_in from;
+		int n;
+		while ((n = m_udpSocket->recv(hbuf, sizeof(hbuf), &from)) > 0) {
+			// hello datagram: type=0xFF, contains client name in bytes 6..
+			if (n >= 7 && hbuf[0] == 0xFF) {
+				std::string clientName(reinterpret_cast<char*>(hbuf + 6),
+									n - 6);
+				m_udpClients[clientName] = from;
+				LOG((CLOG_DEBUG "registered UDP address for client \"%s\"",
+					 clientName.c_str()));
+			}
+		}
+	}
+
+	UdpClientMap::const_iterator it = m_udpClients.find(activeName);
+	if (it == m_udpClients.end())
+		return false;
+
+	int sent = m_udpSocket->sendTo(buf, sizeof(buf), it->second);
+	if (sent != sizeof(buf)) {
+		LOG((CLOG_DEBUG "UDP send failed, falling back to TCP"));
+		return false;
+	}
+	return true;
+}
+
+
+//
 // Server::ClipboardInfo
 //
 
@@ -2324,11 +2849,13 @@ Server::LockCursorToScreenInfo::alloc(State state)
 //
 
 Server::SwitchToScreenInfo*
-Server::SwitchToScreenInfo::alloc(const std::string& screen)
+Server::SwitchToScreenInfo::alloc(const std::string& screen,
+								  SInt32 monitorIndex)
 {
 	SwitchToScreenInfo* info =
 		(SwitchToScreenInfo*)malloc(sizeof(SwitchToScreenInfo) +
-								screen.size());
+									screen.size());
+	info->m_monitorIndex = monitorIndex;
 	strcpy(info->m_screen, screen.c_str());
 	return info;
 }

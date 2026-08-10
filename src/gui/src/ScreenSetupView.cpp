@@ -19,13 +19,25 @@
 #include "ScreenSetupView.h"
 #include "ScreenSetupModel.h"
 #include "ScreenSettingsDialog.h"
+#include "LinkSettingsDialog.h"
+#include "ServerConfig.h"
 
 #include <QtCore>
 #include <QtGui>
 #include <QHeaderView>
+#include <QMenu>
+#include <QContextMenuEvent>
+
+static const struct { int x; int y; const char* name; } s_dirs[] = {
+    {  1,  0, "right" },
+    { -1,  0, "left" },
+    {  0, -1, "up" },
+    {  0,  1, "down" },
+};
 
 ScreenSetupView::ScreenSetupView(QWidget* parent) :
-    QTableView(parent)
+    QTableView(parent),
+    m_pServerConfig(NULL)
 {
     setDropIndicatorShown(true);
     setDragDropMode(DragDrop);
@@ -224,4 +236,75 @@ QStyleOptionViewItem ScreenSetupView::viewOptions() const
     option.displayAlignment = Qt::AlignCenter;
     option.textElideMode = Qt::ElideMiddle;
     return option;
+}
+
+void ScreenSetupView::contextMenuEvent(QContextMenuEvent* event)
+{
+    if (!m_pServerConfig)
+        return;
+
+    int col = columnAt(event->pos().x());
+    int row = rowAt(event->pos().y());
+    QModelIndex index = model()->createIndex(row, col);
+
+    if (!index.isValid())
+        return;
+
+    const Screen& screen = model()->screen(index);
+    if (screen.isNull())
+        return;
+
+    QMenu menu(this);
+
+    // add "Edit Link ..." actions for each direction that has a neighbor
+    for (unsigned int j = 0; j < sizeof(s_dirs) / sizeof(s_dirs[0]); j++)
+    {
+        int nc = col + s_dirs[j].x;
+        int nr = row + s_dirs[j].y;
+        if (nc >= 0 && nc < model()->columnCount() &&
+            nr >= 0 && nr < model()->rowCount())
+        {
+            const Screen& neighbor = model()->screen(nc, nr);
+            if (!neighbor.isNull())
+            {
+                QString label = tr("Edit Link %1 -> %2")
+                    .arg(QString(s_dirs[j].name), neighbor.name());
+                int dirIdx = j;
+                QAction* action = menu.addAction(label);
+                connect(action, &QAction::triggered, [this, index, dirIdx]() {
+                    editLink(index, dirIdx);
+                });
+            }
+        }
+    }
+
+    if (!menu.isEmpty())
+        menu.exec(event->globalPos());
+}
+
+void ScreenSetupView::editLink(const QModelIndex& index, int dirIndex)
+{
+    if (!m_pServerConfig || !index.isValid())
+        return;
+
+    const Screen& srcScreen = model()->screen(index);
+    if (srcScreen.isNull())
+        return;
+
+    int nc = index.column() + s_dirs[dirIndex].x;
+    int nr = index.row() + s_dirs[dirIndex].y;
+    const Screen& dstScreen = model()->screen(nc, nr);
+    if (dstScreen.isNull())
+        return;
+
+    QString direction = QString(s_dirs[dirIndex].name);
+    LinkConfig config = m_pServerConfig->linkConfig(srcScreen.name(), direction);
+
+    LinkSettingsDialog dlg(this, srcScreen.name(), dstScreen.name(),
+                           direction, config);
+    if (dlg.exec() == QDialog::Accepted)
+    {
+        m_pServerConfig->setLinkConfig(srcScreen.name(), direction,
+                                        dlg.linkConfig());
+    }
 }

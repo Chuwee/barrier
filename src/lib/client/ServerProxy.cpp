@@ -19,6 +19,7 @@
 #include "client/ServerProxy.h"
 
 #include "client/Client.h"
+#include "platform/AWDLTransport.h"
 #include "barrier/FileChunk.h"
 #include "barrier/ClipboardChunk.h"
 #include "barrier/StreamChunker.h"
@@ -34,6 +35,8 @@
 #include "base/XBase.h"
 
 #include <memory>
+#include <cstring>
+#include <vector>
 
 //
 // ServerProxy
@@ -53,7 +56,12 @@ ServerProxy::ServerProxy(Client* client, barrier::IStream* stream, IEventQueue* 
     m_keepAliveAlarm(0.0),
     m_keepAliveAlarmTimer(NULL),
     m_parser(&ServerProxy::parseHandshakeMessage),
-    m_events(events)
+    m_events(events),
+    m_udpSocket(NULL),
+    m_udpLastSeqNum(0),
+    m_udpPollTimer(NULL),
+    m_udpHelloTimer(NULL),
+    m_p2pTransport(NULL)
 {
     assert(m_client != NULL);
     assert(m_stream != NULL);
@@ -83,6 +91,22 @@ ServerProxy::~ServerProxy()
     m_events->removeHandler(m_events->forIStream().inputReady(),
                             m_stream->getEventTarget());
     m_events->removeHandler(m_events->forClipboard().clipboardSending(), this);
+
+    if (m_udpPollTimer != NULL) {
+        m_events->removeHandler(Event::kTimer, m_udpPollTimer);
+        m_events->deleteTimer(m_udpPollTimer);
+        m_udpPollTimer = NULL;
+    }
+    if (m_udpHelloTimer != NULL) {
+        m_events->removeHandler(Event::kTimer, m_udpHelloTimer);
+        m_events->deleteTimer(m_udpHelloTimer);
+        m_udpHelloTimer = NULL;
+    }
+    delete m_udpSocket;
+    m_udpSocket = NULL;
+
+    delete m_p2pTransport;
+    m_p2pTransport = NULL;
 }
 
 void
@@ -153,6 +177,9 @@ ServerProxy::handleData(const Event&, void*)
     }
 
     flushCompressedMouse();
+
+    // also poll UDP for mouse datagrams
+    pollUdp();
 }
 
 ServerProxy::EResult
@@ -314,6 +341,10 @@ ServerProxy::parseMessage(const UInt8* code)
     }
     else if (memcmp(code, kMsgDDragInfo, 4) == 0) {
         dragInfoReceived();
+    }
+
+    else if (memcmp(code, kMsgDUdpPort, 4) == 0) {
+        udpPort();
     }
 
     else if (memcmp(code, kMsgCClose, 4) == 0) {
@@ -712,20 +743,9 @@ ServerProxy::mouseMove()
     // note if we should ignore the move
     ignore = m_ignoreMouse;
 
-    // compress mouse motion events if more input follows
-    if (!ignore && !m_compressMouse && m_stream->isReady()) {
-        m_compressMouse = true;
-    }
-
-    // if compressing then ignore the motion but record it
-    if (m_compressMouse) {
-        m_compressMouseRelative = false;
-        ignore    = true;
-        m_xMouse  = x;
-        m_yMouse  = y;
-        m_dxMouse = 0;
-        m_dyMouse = 0;
-    }
+    // NOTE: mouse compression disabled for low-latency cursor tracking.
+    // Every mouse position is applied immediately rather than buffering
+    // and only applying the last one when the stream drains.
     LOG((CLOG_DEBUG2 "recv mouse move %d,%d", x, y));
 
     // forward
@@ -745,17 +765,7 @@ ServerProxy::mouseRelativeMove()
     // note if we should ignore the move
     ignore = m_ignoreMouse;
 
-    // compress mouse motion events if more input follows
-    if (!ignore && !m_compressMouseRelative && m_stream->isReady()) {
-        m_compressMouseRelative = true;
-    }
-
-    // if compressing then ignore the motion but record it
-    if (m_compressMouseRelative) {
-        ignore     = true;
-        m_dxMouse += dx;
-        m_dyMouse += dy;
-    }
+    // NOTE: mouse compression disabled for low-latency cursor tracking.
     LOG((CLOG_DEBUG2 "recv mouse relative move %d,%d", dx, dy));
 
     // forward
@@ -861,6 +871,11 @@ ServerProxy::queryInfo()
     m_client->getShape(info.m_x, info.m_y, info.m_w, info.m_h);
     m_client->getCursorPos(info.m_mx, info.m_my);
     sendInfo(info);
+
+    // send individual monitor geometries only to servers that support it
+    if (m_client->getServerProtocolMinor() >= 7) {
+        sendMonitorInfo();
+    }
 }
 
 void
@@ -913,8 +928,185 @@ ServerProxy::fileChunkSending(UInt8 mark, char* data, size_t dataSize)
 }
 
 void
+ServerProxy::sendMonitorInfo()
+{
+    std::vector<MonitorGeometry> monitors;
+    m_client->getMonitors(monitors);
+
+    if (monitors.empty()) {
+        return;
+    }
+
+    // write DMON header with count
+    SInt16 count = static_cast<SInt16>(monitors.size());
+    ProtocolUtil::writef(m_stream, kMsgDMonitorInfo, count);
+
+    // write each monitor's geometry
+    for (size_t i = 0; i < monitors.size(); ++i) {
+        ProtocolUtil::writef(m_stream, "%2i%2i%2i%2i",
+            static_cast<SInt16>(monitors[i].m_x),
+            static_cast<SInt16>(monitors[i].m_y),
+            static_cast<SInt16>(monitors[i].m_w),
+            static_cast<SInt16>(monitors[i].m_h));
+    }
+
+    LOG((CLOG_DEBUG "sent %d monitor geometries to server", count));
+}
+
+void
 ServerProxy::sendDragInfo(UInt32 fileCount, const char* info, size_t size)
 {
     std::string data(info, size);
     ProtocolUtil::writef(m_stream, kMsgDDragInfo, fileCount, &data);
+}
+
+void
+ServerProxy::udpPort()
+{
+	// parse the UDP port number from the server
+	SInt16 port;
+	ProtocolUtil::readf(m_stream, kMsgDUdpPort + 4, &port);
+	LOG((CLOG_DEBUG "server announced UDP mouse port %d", port));
+
+	// clean up any existing UDP state from a prior announcement
+	if (m_udpPollTimer != NULL) {
+		m_events->removeHandler(Event::kTimer, m_udpPollTimer);
+		m_events->deleteTimer(m_udpPollTimer);
+		m_udpPollTimer = NULL;
+	}
+	if (m_udpHelloTimer != NULL) {
+		m_events->removeHandler(Event::kTimer, m_udpHelloTimer);
+		m_events->deleteTimer(m_udpHelloTimer);
+		m_udpHelloTimer = NULL;
+	}
+	delete m_udpSocket;
+	m_udpSocket = new UDPSocket();
+	m_udpLastSeqNum = 0;
+
+	// get the server's IP from the TCP stream's peer address
+	// (the stream is a TCPSocket, which has getHostname)
+	// We need the server's hostname - use the client's server address
+	std::string serverAddr = m_client->getServerAddress().getHostname();
+	if (serverAddr.empty() || !m_udpSocket->setTarget(serverAddr.c_str(), (UInt16)port)) {
+		LOG((CLOG_WARN "failed to set UDP target, UDP mouse disabled"));
+		delete m_udpSocket;
+		m_udpSocket = NULL;
+		return;
+	}
+
+	// Retry registration independently of the 1ms receive-poll hot path.
+	sendUdpHello();
+	m_udpHelloTimer = m_events->newTimer(1.0, NULL);
+	m_events->adoptHandler(Event::kTimer, m_udpHelloTimer,
+		new TMethodEventJob<ServerProxy>(this,
+			&ServerProxy::handleUdpHelloTimer));
+
+	// start a 1ms poll timer so UDP datagrams are read promptly
+	// even when no TCP traffic is flowing
+	m_udpPollTimer = m_events->newTimer(0.001, NULL);
+	m_events->adoptHandler(Event::kTimer, m_udpPollTimer,
+		new TMethodEventJob<ServerProxy>(this,
+			&ServerProxy::handleUdpPollTimer));
+
+	LOG((CLOG_NOTE "UDP mouse channel active to %s:%d",
+		 serverAddr.c_str(), port));
+
+	// also try to start P2P transport (AWDL on macOS)
+	delete m_p2pTransport;
+	m_p2pTransport = new AWDLTransport();
+	std::string clientName = m_client->getName();
+	if (m_p2pTransport->start(clientName,
+			kDefaultP2pPort)) {
+		LOG((CLOG_NOTE "P2P (AWDL) transport started"));
+	}
+	else {
+		LOG((CLOG_NOTE "P2P transport unavailable, using regular UDP"));
+		delete m_p2pTransport;
+		m_p2pTransport = NULL;
+	}
+}
+
+void
+ServerProxy::sendUdpHello()
+{
+	if (m_udpSocket == NULL)
+		return;
+
+	// format: [type=0xFF][pad:1][seq:4][clientName...]
+	std::string name = m_client->getName();
+	size_t dgSize = 6 + name.size();
+	std::vector<UInt8> hello(dgSize, 0);
+	hello[0] = 0xFF;
+	std::memcpy(&hello[6], name.c_str(), name.size());
+	if (m_udpSocket->send(&hello[0], (int)hello.size()) !=
+			static_cast<int>(hello.size())) {
+		LOG((CLOG_DEBUG "UDP registration hello failed; retrying"));
+	}
+}
+
+void
+ServerProxy::processMouseDatagram(const UInt8* buf)
+{
+	UInt8 type = buf[0];
+	UInt32 seq = ((UInt32)buf[2] << 24) | ((UInt32)buf[3] << 16) |
+				 ((UInt32)buf[4] << 8)  | (UInt32)buf[5];
+	auto decodeSInt32 = [](const UInt8* value) {
+		UInt32 bits = ((UInt32)value[0] << 24) | ((UInt32)value[1] << 16) |
+					  ((UInt32)value[2] << 8)  | (UInt32)value[3];
+		if ((bits & 0x80000000u) == 0)
+			return static_cast<SInt32>(bits);
+		return static_cast<SInt32>(-1 - static_cast<SInt32>(~bits));
+	};
+	SInt32 a = decodeSInt32(buf + 6);
+	SInt32 b = decodeSInt32(buf + 10);
+
+	// discard duplicate packets (seq already seen)
+	if (seq <= m_udpLastSeqNum) {
+		return;
+	}
+	m_udpLastSeqNum = seq;
+
+	if (type == 0x01) {
+		m_client->mouseRelativeMove(a, b);
+	}
+	else if (type == 0x02) {
+		m_client->mouseMove(a, b);
+	}
+}
+
+void
+ServerProxy::pollUdp()
+{
+	UInt8 buf[20];
+	int n;
+
+	// poll P2P socket first (lowest latency)
+	if (m_p2pTransport && m_p2pTransport->isActive()) {
+		UDPSocket* p2pSock = m_p2pTransport->getSocket();
+		if (p2pSock) {
+			while ((n = p2pSock->recvIPv6(buf, sizeof(buf))) == 20) {
+				processMouseDatagram(buf);
+			}
+		}
+	}
+
+	// also poll regular UDP socket
+	if (m_udpSocket == NULL)
+		return;
+
+	while ((n = m_udpSocket->recv(buf, sizeof(buf))) == 20) {
+		processMouseDatagram(buf);
+	}
+}
+
+void
+ServerProxy::handleUdpPollTimer(const Event&, void*)
+{
+	pollUdp();
+}
+
+void
+ServerProxy::handleUdpHelloTimer(const Event&, void*)
+{
+	sendUdpHello();
 }

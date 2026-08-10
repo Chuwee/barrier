@@ -16,9 +16,20 @@
  */
 
 #include "barrier/IPlatformScreen.h"
+#include "barrier/protocol_types.h"
 
 bool
 IPlatformScreen::fakeMediaKey(KeyID id)
 {
     return false;
+}
+
+void
+IPlatformScreen::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+    // default: single monitor matching combined screen shape
+    monitors.clear();
+    MonitorGeometry mg;
+    getShape(mg.m_x, mg.m_y, mg.m_w, mg.m_h);
+    monitors.push_back(mg);
 }

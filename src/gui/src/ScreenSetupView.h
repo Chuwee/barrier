@@ -30,6 +30,7 @@ class QMouseEvent;
 class QResizeEvent;
 class QDragEnterEvent;
 class ScreenSetupModel;
+class ServerConfig;
 
 class ScreenSetupView : public QTableView
 {
@@ -41,6 +42,7 @@ class ScreenSetupView : public QTableView
     public:
         void setModel(QAbstractItemModel* model) override;
         ScreenSetupModel* model() const;
+        void setServerConfig(ServerConfig* config) { m_pServerConfig = config; }
 
     protected:
         void mouseDoubleClickEvent(QMouseEvent*) override;
@@ -52,9 +54,13 @@ class ScreenSetupView : public QTableView
         void startDrag(Qt::DropActions supportedActions) override;
         QStyleOptionViewItem viewOptions() const override;
         void scrollTo(const QModelIndex&, ScrollHint) override {}
+        void contextMenuEvent(QContextMenuEvent* event) override;
     private:
         void enter(const QModelIndex&);
         void remove(const QModelIndex&);
+        void editLink(const QModelIndex& index, int dirIndex);
+
+        ServerConfig* m_pServerConfig;
 };
 
 #endif

@@ -19,6 +19,9 @@
 #pragma once
 
 #include "barrier/IClient.h"
+#include "barrier/protocol_types.h"
+
+#include <vector>
 
 namespace barrier { class IStream; }
 
@@ -55,6 +58,13 @@ public:
     Return if this proxy is for client or primary.
     */
     virtual bool        isPrimary() const { return false; }
+
+    //! Get individual monitor geometries
+    /*!
+    Returns monitor geometries. Default returns a single monitor
+    matching the combined screen shape.
+    */
+    virtual void        getMonitors(std::vector<MonitorGeometry>& monitors) const;
 
     //@}
 

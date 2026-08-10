@@ -32,6 +32,10 @@
 #include "common/stdmap.h"
 #include "common/stdset.h"
 #include "common/stdvector.h"
+#include "net/UDPSocket.h"
+#include "net/P2PTransport.h"
+
+#include <cstring>
 
 class BaseClientProxy;
 class EventQueueTimer;
@@ -62,9 +66,11 @@ public:
     //! Switch to screen data
     class SwitchToScreenInfo {
     public:
-        static SwitchToScreenInfo* alloc(const std::string& screen);
+        static SwitchToScreenInfo* alloc(const std::string& screen,
+                                         SInt32 monitorIndex = -1);
 
     public:
+        SInt32          m_monitorIndex;
         // this is a C-string;  this type is a variable size structure
         char            m_screen[1];
     };
@@ -206,6 +212,7 @@ private:
 
     // jump to screen
     void                jumpToScreen(BaseClientProxy*);
+    void                jumpToScreen(BaseClientProxy*, SInt32 monitorIndex);
 
     // convert pixel position to fraction, using x or y depending on the
     // direction.
@@ -217,6 +224,11 @@ private:
     void                mapToPixel(BaseClientProxy*, EDirection, float f,
                             SInt32& x, SInt32& y) const;
 
+    // convert fraction to pixel position on a specific monitor
+    void                mapToPixelOnMonitor(BaseClientProxy*, EDirection,
+                            float f, SInt32 monitorIndex,
+                            SInt32& x, SInt32& y) const;
+
     // returns true if the client has a neighbor anywhere along the edge
     // indicated by the direction.
     bool                hasAnyNeighbor(BaseClientProxy*, EDirection) const;
@@ -225,6 +237,9 @@ private:
     // the direction to the neighbor's coordinate space.
     BaseClientProxy*    getNeighbor(BaseClientProxy*, EDirection,
                             SInt32& x, SInt32& y) const;
+    BaseClientProxy*    getNeighbor(BaseClientProxy*, EDirection,
+                            SInt32& x, SInt32& y,
+                            bool& usedMonitorTarget) const;
 
     // lookup neighboring screen.  given a position relative to the
     // source screen, find the screen we should move onto and where.
@@ -232,6 +247,16 @@ private:
     // cross multiple screens.  if there is no suitable screen then
     // return NULL and x,y are not modified.
     BaseClientProxy*    mapToNeighbor(BaseClientProxy*, EDirection,
+                            SInt32& x, SInt32& y) const;
+
+    // check if cursor is at an internal monitor boundary that has
+    // a configured link.  returns true if an internal edge was hit.
+    bool                checkInternalMonitorEdge(SInt32 x, SInt32 y,
+                            EDirection& dir, SInt32& monitorIndex) const;
+
+    // get the neighbor from a specific source monitor edge
+    BaseClientProxy*    getNeighborFromMonitor(BaseClientProxy* src,
+                            EDirection dir, SInt32 srcMonitorIndex,
                             SInt32& x, SInt32& y) const;
 
     // adjusts x and y or neither to avoid ending up in a jump zone
@@ -481,4 +506,18 @@ private:
 
     ClientListener*        m_clientListener;
     ServerArgs            m_args;
+
+    // UDP mouse channel
+    UDPSocket*            m_udpSocket;
+    bool                m_udpMouseEnabled;
+    UInt32                m_udpSeqNum;
+    double                m_udpSyncInterval;  // seconds, 0 = disabled
+    Stopwatch            m_udpSyncTimer;
+    typedef std::map<std::string, struct sockaddr_in> UdpClientMap;
+    UdpClientMap        m_udpClients;
+
+    bool                sendUdpDatagram(UInt8 type, SInt32 a, SInt32 b);
+
+    // P2P (AWDL) transport — preferred over regular UDP when active
+    P2PTransport*        m_p2pTransport;
 };

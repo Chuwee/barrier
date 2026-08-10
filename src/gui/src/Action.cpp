@@ -37,6 +37,7 @@ Action::Action() :
     m_Type(keystroke),
     m_TypeScreenNames(),
     m_SwitchScreenName(),
+    m_SwitchScreenMonitor(-1),
     m_SwitchDirection(switchLeft),
     m_LockCursorMode(lockCursorToggle),
     m_ActiveOnRelease(false),
@@ -87,6 +88,10 @@ QString Action::text() const
         case switchToScreen:
             text += "(";
             text += switchScreenName();
+            if (switchScreenMonitor() >= 0) {
+                text += ",";
+                text += QString::number(switchScreenMonitor());
+            }
             text += ")";
             break;
 
@@ -129,6 +134,7 @@ void Action::loadSettings(QSettings& settings)
     settings.endArray();
 
     setSwitchScreenName(settings.value("switchScreenName").toString());
+    setSwitchScreenMonitor(settings.value("switchScreenMonitor", -1).toInt());
     setSwitchDirection(settings.value("switchInDirection", switchLeft).toInt());
     setLockCursorMode(settings.value("lockCursorToScreen", lockCursorToggle).toInt());
     setActiveOnRelease(settings.value("activeOnRelease", false).toBool());
@@ -149,6 +155,7 @@ void Action::saveSettings(QSettings& settings) const
     settings.endArray();
 
     settings.setValue("switchScreenName", switchScreenName());
+    settings.setValue("switchScreenMonitor", switchScreenMonitor());
     settings.setValue("switchInDirection", switchDirection());
     settings.setValue("lockCursorToScreen", lockCursorMode());
     settings.setValue("activeOnRelease", activeOnRelease());

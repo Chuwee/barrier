@@ -29,10 +29,12 @@ set(GUI_SOURCE_FILES
     src/CommandProcess.cpp
     src/DataDownloader.cpp
     src/DisplayIsValid.cpp
+    src/DisplayLayoutWidget.cpp
     src/FingerprintAcceptDialog.cpp
     src/HotkeyDialog.cpp
     src/IpcClient.cpp
     src/Ipc.cpp
+    src/LinkSettingsDialog.cpp
     src/IpcReader.cpp
     src/KeySequenceWidget.cpp
     src/LogWindow.cpp
@@ -69,10 +71,13 @@ set(GUI_HEADER_FILES
     src/CommandProcess.h
     src/DataDownloader.h
     src/DisplayIsValid.h
+    src/DisplayLayoutWidget.h
     src/ElevateMode.h
     src/HotkeyDialog.h
     src/IpcClient.h
     src/Ipc.h
+    src/LinkConfig.h
+    src/LinkSettingsDialog.h
     src/IpcReader.h
     src/KeySequenceWidget.h
     src/LogWindow.h

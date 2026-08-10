@@ -40,6 +40,7 @@ class ActionDialog : public QDialog, public Ui::ActionDialogBase
     protected slots:
         void accept();
         void on_m_pKeySequenceWidgetHotkey_keySequenceChanged();
+        void updateSwitchMonitorControls();
 
     protected:
         const KeySequenceWidget* sequenceWidget() const { return m_pKeySequenceWidgetHotkey; }

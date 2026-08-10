@@ -49,6 +49,7 @@ public:
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
+    virtual void        getMonitors(std::vector<MonitorGeometry>& monitors) const;
 
     // IPrimaryScreen overrides
     virtual void        reconfigure(UInt32 activeSides);

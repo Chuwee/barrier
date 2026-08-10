@@ -51,3 +51,5 @@ const char*                kMsgEIncompatible    = "EICV%2i%2i";
 const char*                kMsgEBusy             = "EBSY";
 const char*                kMsgEUnknown        = "EUNK";
 const char*                kMsgEBad            = "EBAD";
+const char*                kMsgDMonitorInfo    = "DMON%2i";
+const char*                kMsgDUdpPort        = "DUDP%2i";

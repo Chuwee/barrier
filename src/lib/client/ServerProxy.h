@@ -22,6 +22,8 @@
 #include "barrier/key_types.h"
 #include "base/Event.h"
 #include "base/Stopwatch.h"
+#include "net/UDPSocket.h"
+#include "net/P2PTransport.h"
 
 class Client;
 class ClientInfo;
@@ -73,6 +75,7 @@ private:
     void                flushCompressedMouse();
 
     void                sendInfo(const ClientInfo&);
+    void                sendMonitorInfo();
 
     void                resetKeepAliveAlarm();
     void                setKeepAliveRate(double);
@@ -105,6 +108,10 @@ private:
     void                infoAcknowledgment();
     void                fileChunkReceived();
     void                dragInfoReceived();
+    void                udpPort();
+    void                sendUdpHello();
+    void                pollUdp();
+    void                processMouseDatagram(const UInt8* buf);
     void                handleClipboardSendingEvent(const Event&, void*);
 
 private:
@@ -129,4 +136,15 @@ private:
 
     MessageParser        m_parser;
     IEventQueue*        m_events;
+
+    // UDP mouse channel
+    UDPSocket*            m_udpSocket;
+    UInt32                m_udpLastSeqNum;
+    EventQueueTimer*    m_udpPollTimer;
+    EventQueueTimer*    m_udpHelloTimer;
+    void                handleUdpPollTimer(const Event&, void*);
+    void                handleUdpHelloTimer(const Event&, void*);
+
+    // P2P (AWDL) transport — receives datagrams via direct WiFi P2P
+    P2PTransport*        m_p2pTransport;
 };

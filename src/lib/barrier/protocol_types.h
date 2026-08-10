@@ -33,10 +33,16 @@
 // 1.6:  adds clipboard streaming
 // NOTE: with new version, barrier minor version should increment
 static const SInt16        kProtocolMajorVersion = 1;
-static const SInt16        kProtocolMinorVersion = 6;
+static const SInt16        kProtocolMinorVersion = 7;
 
 // default contact port number
 static const UInt16        kDefaultPort = 24800;
+
+// default UDP port for mouse channel
+static const UInt16        kDefaultUdpPort = 24801;
+
+// default P2P (AWDL) UDP port for mouse channel
+static const UInt16        kDefaultP2pPort = 24802;
 
 // maximum total length for greeting returned by client
 static const UInt32        kMaxHelloLength = 1024;
@@ -310,6 +316,16 @@ extern const char*        kMsgEUnknown;
 // primary should disconnect after sending this message.
 extern const char*        kMsgEBad;
 
+// monitor info:  secondary -> primary
+// $1 = number of monitors, then repeated (x, y, w, h) for each monitor.
+// sent by client after DINF if server version >= 1.7.
+extern const char*        kMsgDMonitorInfo;
+
+// UDP port announcement:  primary -> secondary
+// $1 = UDP port number for the mouse channel.
+// sent by server to tell client the UDP port to use.
+extern const char*        kMsgDUdpPort;
+
 
 //
 // structures
@@ -342,4 +358,10 @@ public:
     The current location of the mouse cursor.
     */
     SInt32                m_mx, m_my;
+};
+
+//! Individual monitor geometry
+class MonitorGeometry {
+public:
+    SInt32                m_x, m_y, m_w, m_h;
 };

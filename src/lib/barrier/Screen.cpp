@@ -497,6 +497,12 @@ Screen::getCursorPos(SInt32& x, SInt32& y) const
 }
 
 void
+Screen::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+    m_screen->getMonitors(monitors);
+}
+
+void
 Screen::enablePrimary()
 {
     // get notified of screen saver activation/deactivation

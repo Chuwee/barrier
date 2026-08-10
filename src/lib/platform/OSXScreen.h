@@ -21,6 +21,7 @@
 #include "platform/OSXClipboard.h"
 #include "barrier/PlatformScreen.h"
 #include "barrier/DragInformation.h"
+#include "barrier/protocol_types.h"
 #include "base/EventTypes.h"
 #include "common/stdmap.h"
 #include "common/stdvector.h"
@@ -64,6 +65,7 @@ public:
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const;
+    virtual void        getMonitors(std::vector<MonitorGeometry>& monitors) const;
 
     // IPrimaryScreen overrides
     virtual void        reconfigure(UInt32 activeSides);
@@ -344,6 +346,9 @@ private:
     Mutex*                    m_carbonLoopMutex;
     CondVar<bool>*            m_carbonLoopReady;
 #endif
+
+    // individual monitor geometries
+    std::vector<MonitorGeometry>    m_monitors;
 
     class OSXScreenImpl*    m_impl;
 };

@@ -23,7 +23,10 @@
 #include "base/EventTypes.h"
 #include "common/IInterface.h"
 
+#include <vector>
+
 class IClipboard;
+class MonitorGeometry;
 
 //! Screen interface
 /*!
@@ -66,6 +69,13 @@ public:
     Return the current position of the cursor in \c x and \c y.
     */
     virtual void        getCursorPos(SInt32& x, SInt32& y) const = 0;
+
+    //! Get individual monitor geometries
+    /*!
+    Returns the geometry of each individual monitor. The default
+    implementation returns an empty vector.
+    */
+    virtual void        getMonitors(std::vector<MonitorGeometry>& /*monitors*/) const { }
 
     //@}
 };

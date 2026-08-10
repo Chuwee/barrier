@@ -26,7 +26,10 @@
 #include "barrier/IKeyState.h"
 #include "barrier/option_types.h"
 
+#include <vector>
+
 class IClipboard;
+class MonitorGeometry;
 
 //! Screen interface
 /*!
@@ -151,6 +154,7 @@ public:
     virtual void        getShape(SInt32& x, SInt32& y,
                             SInt32& width, SInt32& height) const = 0;
     virtual void        getCursorPos(SInt32& x, SInt32& y) const = 0;
+    virtual void        getMonitors(std::vector<MonitorGeometry>& monitors) const;
 
     // IPrimaryScreen overrides
     virtual void        reconfigure(UInt32 activeSides) = 0;

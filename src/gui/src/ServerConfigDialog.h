@@ -26,6 +26,11 @@
 #include "ui_ServerConfigDialogBase.h"
 
 #include <QDialog>
+#include <QCheckBox>
+#include <QLabel>
+#include <QSpinBox>
+
+class DisplayLayoutWidget;
 
 class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
 {
@@ -59,7 +64,10 @@ class ServerConfigDialog : public QDialog, public Ui::ServerConfigDialogBase
         ServerConfig& m_OrigServerConfig;
         ServerConfig m_ServerConfig;
         ScreenSetupModel m_ScreenSetupModel;
+        DisplayLayoutWidget* m_pDisplayLayout;
         QString m_Message;
+        QCheckBox* m_pCheckBoxUdpMouse;
+        QSpinBox* m_pSpinBoxUdpSync;
 };
 
 #endif

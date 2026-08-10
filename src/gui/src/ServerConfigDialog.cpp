@@ -20,6 +20,7 @@
 #include "ServerConfig.h"
 #include "HotkeyDialog.h"
 #include "ActionDialog.h"
+#include "DisplayLayoutWidget.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -31,7 +32,9 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
     m_OrigServerConfig(config),
     m_ServerConfig(config),
     m_ScreenSetupModel(serverConfig().screens(), serverConfig().numColumns(), serverConfig().numRows()),
-    m_Message("")
+    m_pDisplayLayout(nullptr),
+    m_Message(""),
+    m_pCheckBoxUdpMouse(nullptr)
 {
     setupUi(this);
 
@@ -60,14 +63,52 @@ ServerConfigDialog::ServerConfigDialog(QWidget* parent, ServerConfig& config, co
 
     m_pCheckBoxEnableClipboard->setChecked(serverConfig().clipboardSharing());
 
+    // add UDP mouse checkbox to the advanced tab programmatically
+    m_pCheckBoxUdpMouse = new QCheckBox(tr("Use &UDP for mouse movement (lower latency)"));
+    m_pCheckBoxUdpMouse->setChecked(serverConfig().udpMouse());
+    m_pSpinBoxUdpSync = new QSpinBox();
+    m_pSpinBoxUdpSync->setRange(0, 5000);
+    m_pSpinBoxUdpSync->setSuffix(" ms");
+    m_pSpinBoxUdpSync->setSpecialValueText(tr("Off (no sync)"));
+    m_pSpinBoxUdpSync->setValue(serverConfig().udpSyncMs());
+    QLabel* udpSyncLabel = new QLabel(tr("UDP position sync interval:"));
+    QGridLayout* advLayout = qobject_cast<QGridLayout*>(m_pTabAdvanced->layout());
+    if (advLayout) {
+        int row = advLayout->rowCount();
+        advLayout->addWidget(m_pCheckBoxUdpMouse, row, 0, 1, 2);
+        advLayout->addWidget(udpSyncLabel, row + 1, 0);
+        advLayout->addWidget(m_pSpinBoxUdpSync, row + 1, 1);
+    }
+
     for (const Hotkey& hotkey : serverConfig().hotkeys()) {
         m_pListHotkeys->addItem(hotkey.text());
     }
 
+    // keep the grid model alive for compatibility but hide the old tab
     m_pScreenSetupView->setModel(&m_ScreenSetupModel);
+    m_pScreenSetupView->setServerConfig(&m_ServerConfig);
 
     if (serverConfig().numScreens() == 0)
         model().screen(serverConfig().numColumns() / 2, serverConfig().numRows() / 2) = Screen(defaultScreenName);
+
+    // replace the grid tab with the visual display layout
+    m_pDisplayLayout = new DisplayLayoutWidget();
+    m_pDisplayLayout->setServerName(defaultScreenName);
+    m_pDisplayLayout->setServerConfig(&m_ServerConfig);
+
+    // collect remote screen names from config
+    QStringList remoteNames;
+    for (const Screen& s : serverConfig().screens()) {
+        if (!s.isNull() && s.name() != defaultScreenName)
+            remoteNames << s.name();
+    }
+    m_pDisplayLayout->setRemoteScreens(remoteNames);
+
+    // replace the "Screens and links" tab content
+    int screensTabIdx = m_pTabWidget->indexOf(m_pTabScreens);
+    m_pTabWidget->removeTab(screensTabIdx);
+    m_pTabWidget->insertTab(screensTabIdx, m_pDisplayLayout, tr("Display Arrangement"));
+    m_pTabWidget->setCurrentIndex(screensTabIdx);
 }
 
 void ServerConfigDialog::showEvent(QShowEvent* event)
@@ -108,6 +149,13 @@ void ServerConfigDialog::accept()
     serverConfig().setIgnoreAutoConfigClient(m_pCheckBoxIgnoreAutoConfigClient->isChecked());
     serverConfig().setEnableDragAndDrop(m_pCheckBoxEnableDragAndDrop->isChecked());
     serverConfig().setClipboardSharing(m_pCheckBoxEnableClipboard->isChecked());
+    serverConfig().setUdpMouse(m_pCheckBoxUdpMouse->isChecked());
+    serverConfig().setUdpSyncMs(m_pSpinBoxUdpSync->value());
+
+    // apply visual layout links to config
+    if (m_pDisplayLayout) {
+        m_pDisplayLayout->applyToServerConfig(&m_ServerConfig);
+    }
 
     // now that the dialog has been accepted, copy the new server config to the original one,
     // which is a reference to the one in MainWindow.

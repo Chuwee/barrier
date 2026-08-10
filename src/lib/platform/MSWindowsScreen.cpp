@@ -40,6 +40,7 @@
 #include "base/IEventQueue.h"
 #include "base/TMethodEventJob.h"
 
+#include <algorithm>
 #include <string.h>
 #include <Shlobj.h>
 #include <comutil.h>
@@ -512,6 +513,41 @@ void
 MSWindowsScreen::getCursorPos(SInt32& x, SInt32& y) const
 {
     m_desks->getCursorPos(x, y);
+}
+
+static BOOL CALLBACK monitorEnumProc(HMONITOR, HDC, LPRECT rect, LPARAM data)
+{
+    std::vector<MonitorGeometry>* monitors =
+        reinterpret_cast<std::vector<MonitorGeometry>*>(data);
+    MonitorGeometry mg;
+    mg.m_x = rect->left;
+    mg.m_y = rect->top;
+    mg.m_w = rect->right - rect->left;
+    mg.m_h = rect->bottom - rect->top;
+    monitors->push_back(mg);
+    return TRUE;
+}
+
+void
+MSWindowsScreen::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+    monitors.clear();
+    EnumDisplayMonitors(NULL, NULL, monitorEnumProc,
+                        reinterpret_cast<LPARAM>(&monitors));
+
+    // sort monitors left-to-right, top-to-bottom to match GUI index assignment
+    if (monitors.size() > 1) {
+        std::sort(monitors.begin(), monitors.end(),
+            [](const MonitorGeometry& a, const MonitorGeometry& b) {
+                if (a.m_x != b.m_x) return a.m_x < b.m_x;
+                return a.m_y < b.m_y;
+            });
+    }
+
+    if (monitors.empty()) {
+        // fallback to single combined screen
+        IPlatformScreen::getMonitors(monitors);
+    }
 }
 
 void

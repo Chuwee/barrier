@@ -23,10 +23,13 @@
 #include "barrier/key_types.h"
 #include "net/XSocket.h"
 #include "base/IEventQueue.h"
+#include "base/Log.h"
 #include "common/stdistream.h"
 #include "common/stdostream.h"
 
+#include <climits>
 #include <cstdlib>
+#include <vector>
 
 using namespace barrier::string;
 
@@ -474,6 +477,41 @@ std::string Config::getNeighbor(const std::string& srcName, EDirection srcSide,
 	}
 }
 
+std::string Config::getNeighbor(const std::string& srcName, EDirection srcSide,
+                                float position, float* positionOut,
+                                SInt32* monitorIndexOut) const
+{
+	assert(srcSide >= kFirstDirection && srcSide <= kLastDirection);
+
+	// find source cell
+	CellMap::const_iterator index = m_map.find(getCanonicalName(srcName));
+	if (index == m_map.end()) {
+        return std::string();
+	}
+
+	// find edge
+	const CellEdge* srcEdge, *dstEdge;
+	if (!index->second.getLink(srcSide, position, srcEdge, dstEdge)) {
+		// no neighbor
+		return "";
+	}
+	else {
+		// compute position on neighbor
+		if (positionOut != NULL) {
+			*positionOut =
+				dstEdge->inverseTransform(srcEdge->transform(position));
+		}
+
+		// output monitor index if requested
+		if (monitorIndexOut != NULL) {
+			*monitorIndexOut = dstEdge->getMonitorIndex();
+		}
+
+		// return neighbor's name
+		return getCanonicalName(dstEdge->getName());
+	}
+}
+
 bool Config::hasNeighbor(const std::string& srcName, EDirection srcSide) const
 {
 	return hasNeighbor(srcName, srcSide, 0.0f, 1.0f);
@@ -491,6 +529,62 @@ bool Config::hasNeighbor(const std::string& srcName, EDirection srcSide,
 	}
 
 	return index->second.overlaps(CellEdge(srcSide, Interval(start, end)));
+}
+
+std::string Config::getNeighbor(const std::string& srcName, EDirection srcSide,
+                                float position, float* positionOut,
+                                SInt32 srcMonitorIndex,
+                                SInt32* dstMonitorIndexOut) const
+{
+	assert(srcSide >= kFirstDirection && srcSide <= kLastDirection);
+
+	// find source cell
+	CellMap::const_iterator index = m_map.find(getCanonicalName(srcName));
+	if (index == m_map.end()) {
+        return std::string();
+	}
+
+	// find edge matching the specific source monitor
+	const CellEdge* srcEdge, *dstEdge;
+	if (!index->second.getLink(srcSide, position, srcMonitorIndex,
+							srcEdge, dstEdge)) {
+		return "";
+	}
+
+	// compute position on neighbor
+	if (positionOut != NULL) {
+		*positionOut =
+			dstEdge->inverseTransform(srcEdge->transform(position));
+	}
+
+	// output destination monitor index if requested
+	if (dstMonitorIndexOut != NULL) {
+		*dstMonitorIndexOut = dstEdge->getMonitorIndex();
+	}
+
+	return getCanonicalName(dstEdge->getName());
+}
+
+bool Config::hasNeighbor(const std::string& srcName, EDirection srcSide,
+                         SInt32 srcMonitorIndex) const
+{
+	assert(srcSide >= kFirstDirection && srcSide <= kLastDirection);
+
+	// find source cell
+	CellMap::const_iterator index = m_map.find(getCanonicalName(srcName));
+	if (index == m_map.end()) {
+		return false;
+	}
+
+	// search for any link matching this side and source monitor index
+	for (Cell::const_iterator i = index->second.begin();
+							i != index->second.end(); ++i) {
+		if (i->first.getSide() == srcSide &&
+			i->first.getSrcMonitorIndex() == srcMonitorIndex) {
+			return true;
+		}
+	}
+	return false;
 }
 
 Config::link_const_iterator Config::beginNeighbor(const std::string& srcName) const
@@ -628,6 +722,89 @@ std::string Config::formatInterval(const Interval& x)
 										(int)(x.second * 100.0f + 0.5f));
 }
 
+EDirection
+Config::oppositeDirection(EDirection dir)
+{
+	switch (dir) {
+	case kLeft:   return kRight;
+	case kRight:  return kLeft;
+	case kTop:    return kBottom;
+	case kBottom: return kTop;
+	default:      return kNoDirection;
+	}
+}
+
+void
+Config::generateReverseMappings()
+{
+	// collect reverse mappings in a temp vector (can't modify m_map while iterating)
+	struct ReverseMapping {
+		std::string    dstScreenName;
+		CellEdge    reverseSrc;
+		CellEdge    reverseDst;
+		ReverseMapping(const std::string& dst, const CellEdge& src, const CellEdge& d)
+			: dstScreenName(dst), reverseSrc(src), reverseDst(d) {}
+	};
+	std::vector<ReverseMapping> reversals;
+
+	for (CellMap::const_iterator cell = m_map.begin();
+							cell != m_map.end(); ++cell) {
+		const std::string& srcScreenName = cell->first;
+		for (Cell::const_iterator link = cell->second.begin();
+								link != cell->second.end(); ++link) {
+			const CellEdge& srcEdge = link->first;
+			const CellEdge& dstEdge = link->second;
+
+			EDirection reverseDir = oppositeDirection(srcEdge.getSide());
+			if (reverseDir == kNoDirection) {
+				continue;
+			}
+
+			// look up the canonical destination screen name
+			std::string dstCanonical = getCanonicalName(dstEdge.getName());
+			if (dstCanonical.empty()) {
+				continue;
+			}
+
+			// if the forward destination targets a specific monitor,
+			// the reverse source should originate from that monitor
+			CellEdge revSrc = (dstEdge.getMonitorIndex() >= 0)
+				? CellEdge(reverseDir, dstEdge.getInterval(),
+							dstEdge.getMonitorIndex())
+				: CellEdge(reverseDir, dstEdge.getInterval());
+
+			// if the forward source is from a specific monitor,
+			// the reverse destination should target that monitor
+			CellEdge revDst = (srcEdge.getSrcMonitorIndex() >= 0)
+				? CellEdge(srcScreenName, reverseDir,
+							srcEdge.getInterval(),
+							srcEdge.getSrcMonitorIndex())
+				: CellEdge(srcScreenName, reverseDir,
+							srcEdge.getInterval());
+			reversals.push_back(ReverseMapping(dstCanonical, revSrc, revDst));
+		}
+	}
+
+	// apply all queued reverse mappings (Cell::add silently skips overlaps)
+	for (size_t i = 0; i < reversals.size(); ++i) {
+		CellMap::iterator index = m_map.find(reversals[i].dstScreenName);
+		if (index != m_map.end()) {
+			if (index->second.add(reversals[i].reverseSrc, reversals[i].reverseDst)) {
+				LOG((CLOG_DEBUG1 "auto-generated reverse link: %s:%s -> %s",
+					reversals[i].dstScreenName.c_str(),
+					dirName(reversals[i].reverseSrc.getSide()),
+					reversals[i].reverseDst.getName().c_str()));
+			}
+			else {
+				LOG((CLOG_DEBUG1 "skipped reverse link (overlap): %s:%s -> %s",
+					reversals[i].dstScreenName.c_str(),
+					dirName(reversals[i].reverseSrc.getSide()),
+					reversals[i].reverseDst.getName().c_str()));
+			}
+		}
+	}
+}
+
 void
 Config::readSection(ConfigReadContext& s)
 {
@@ -743,6 +920,12 @@ Config::readSectionOptions(ConfigReadContext& s)
 		}
 		else if (name == "clipboardSharing") {
 			addOption("", kOptionClipboardSharing, s.parseBoolean(value));
+		}
+		else if (name == "udpMouse") {
+			addOption("", kOptionUdpMouseChannel, s.parseBoolean(value));
+		}
+		else if (name == "udpSyncMs") {
+			addOption("", kOptionUdpSyncMs, s.parseInt(value));
 		}
 
 		else {
@@ -914,16 +1097,33 @@ Config::readSectionLinks(ConfigReadContext& s)
 {
     std::string line;
     std::string screen;
+	SInt32 currentSrcMonitorIndex = -1;
 	while (s.readLine(line)) {
 		// check for end of section
 		if (line == "end") {
+			generateReverseMappings();
 			return;
 		}
 
 		// see if it's the next screen
 		if (line[line.size() - 1] == ':') {
 			// strip :
-			screen = line.substr(0, line.size() - 1);
+			std::string rawScreen = line.substr(0, line.size() - 1);
+
+			// check for @N source monitor index suffix
+			currentSrcMonitorIndex = -1;
+			std::string::size_type atPos = rawScreen.find('@');
+			if (atPos != std::string::npos) {
+				std::string monStr = rawScreen.substr(atPos + 1);
+				rawScreen = rawScreen.substr(0, atPos);
+				if (monStr.empty() ||
+					monStr.find_first_not_of("0123456789") != std::string::npos) {
+					throw XConfigRead(s,
+						"invalid source monitor index \"%{1}\"", monStr);
+				}
+				currentSrcMonitorIndex = (SInt32)std::atoi(monStr.c_str());
+			}
+			screen = rawScreen;
 
 			// verify we know about the screen
 			if (!isScreen(screen)) {
@@ -937,10 +1137,11 @@ Config::readSectionLinks(ConfigReadContext& s)
 			throw XConfigRead(s, "argument before first screen");
 		}
 		else {
-			// parse argument:  `<name>[(<s0>,<e0>)]=<value>[(<s1>,<e1>)]'
+			// parse argument:  `<name>[(<s0>,<e0>)]=<value>[@N][(<s1>,<e1>)]'
 			// the stuff in brackets is optional.  interval values must be
 			// in the range [0,100] and start < end.  if not given the
-			// interval is taken to be (0,100).
+			// interval is taken to be (0,100).  @N targets a specific
+			// monitor index on the destination screen.
             std::string::size_type i = 0;
             std::string side, dstScreen, srcArgString, dstArgString;
 			ConfigReadContext::ArgList srcArgs, dstArgs;
@@ -968,14 +1169,44 @@ Config::readSectionLinks(ConfigReadContext& s)
 				// unknown argument
 				throw XConfigRead(s, "unknown side \"%{1}\" in link", side);
 			}
+			// check for @N monitor index suffix on destination screen
+			SInt32 monitorIndex = -1;
+			std::string::size_type atPos = dstScreen.find('@');
+			if (atPos != std::string::npos) {
+				std::string monStr = dstScreen.substr(atPos + 1);
+				dstScreen = dstScreen.substr(0, atPos);
+				if (monStr.empty() ||
+					monStr.find_first_not_of("0123456789") != std::string::npos) {
+					throw XConfigRead(s,
+						"invalid monitor index \"%{1}\"", monStr);
+				}
+				monitorIndex = (SInt32)std::atoi(monStr.c_str());
+			}
+
 			if (!isScreen(dstScreen)) {
 				throw XConfigRead(s, "unknown screen name \"%{1}\"", dstScreen);
 			}
-			if (!connect(screen, dir,
-						srcInterval.first, srcInterval.second,
-						dstScreen,
-						dstInterval.first, dstInterval.second)) {
-				throw XConfigRead(s, "overlapping range");
+
+			if (monitorIndex >= 0 || currentSrcMonitorIndex >= 0) {
+				// create edges manually to include monitor index
+				CellEdge srcEdge(dir,
+								Interval(srcInterval.first, srcInterval.second),
+								currentSrcMonitorIndex);
+				CellEdge dstEdge(dstScreen, dir,
+								Interval(dstInterval.first, dstInterval.second),
+								monitorIndex >= 0 ? monitorIndex : -1);
+				CellMap::iterator idx = m_map.find(getCanonicalName(screen));
+				if (idx == m_map.end() || !idx->second.add(srcEdge, dstEdge)) {
+					throw XConfigRead(s, "overlapping range");
+				}
+			}
+			else {
+				if (!connect(screen, dir,
+							srcInterval.first, srcInterval.second,
+							dstScreen,
+							dstInterval.first, dstInterval.second)) {
+					throw XConfigRead(s, "overlapping range");
+				}
 			}
 		}
 	}
@@ -1141,8 +1372,8 @@ void Config::parseAction(ConfigReadContext& s, const std::string& name,
 */
 
 	else if (name == "switchToScreen") {
-		if (args.size() != 1) {
-			throw XConfigRead(s, "syntax for action: switchToScreen(name)");
+		if (args.size() < 1 || args.size() > 2) {
+			throw XConfigRead(s, "syntax for action: switchToScreen(name[,monitor])");
 		}
 
         std::string screen = args[0];
@@ -1153,7 +1384,19 @@ void Config::parseAction(ConfigReadContext& s, const std::string& name,
 			throw XConfigRead(s, "unknown screen name in switchToScreen");
 		}
 
-		action = new InputFilter::SwitchToScreenAction(m_events, screen);
+		SInt32 monitorIndex = -1;
+		if (args.size() == 2) {
+			char* end = NULL;
+			long parsed = std::strtol(args[1].c_str(), &end, 10);
+			if (end == args[1].c_str() || *end != '\0' ||
+				parsed < 0 || parsed > INT_MAX) {
+				throw XConfigRead(s, "invalid monitor index in switchToScreen");
+			}
+			monitorIndex = static_cast<SInt32>(parsed);
+		}
+
+		action = new InputFilter::SwitchToScreenAction(
+			m_events, screen, monitorIndex);
 	}
 
   else if (name == "toggleScreen") {
@@ -1360,6 +1603,12 @@ Config::getOptionName(OptionID id)
 	if (id == kOptionClipboardSharing) {
 		return "clipboardSharing";
 	}
+	if (id == kOptionUdpMouseChannel) {
+		return "udpMouse";
+	}
+	if (id == kOptionUdpSyncMs) {
+		return "udpSyncMs";
+	}
 	return NULL;
 }
 
@@ -1376,7 +1625,8 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
 		id == kOptionRelativeMouseMoves ||
 		id == kOptionWin32KeepForeground ||
 		id == kOptionScreenPreserveFocus ||
-		id == kOptionClipboardSharing) {
+		id == kOptionClipboardSharing ||
+		id == kOptionUdpMouseChannel) {
 		return (value != 0) ? "true" : "false";
 	}
 	if (id == kOptionModifierMapForShift ||
@@ -1411,7 +1661,8 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
 	if (id == kOptionHeartbeat ||
 		id == kOptionScreenSwitchCornerSize ||
 		id == kOptionScreenSwitchDelay ||
-		id == kOptionScreenSwitchTwoTap) {
+		id == kOptionScreenSwitchTwoTap ||
+		id == kOptionUdpSyncMs) {
 		return barrier::string::sprintf("%d", value);
 	}
 	if (id == kOptionScreenSwitchCorners) {
@@ -1471,6 +1722,17 @@ Config::CellEdge::CellEdge(EDirection side, const Interval& interval)
 	init("", side, interval);
 }
 
+Config::CellEdge::CellEdge(EDirection side, const Interval& interval,
+                            SInt32 srcMonitorIndex)
+{
+	assert(interval.first >= 0.0f);
+	assert(interval.second <= 1.0f);
+	assert(interval.first < interval.second);
+
+	init("", side, interval);
+	m_srcMonitorIndex = srcMonitorIndex;
+}
+
 Config::CellEdge::CellEdge(const std::string& name, EDirection side, const Interval& interval)
 {
 	assert(interval.first >= 0.0f);
@@ -1478,6 +1740,17 @@ Config::CellEdge::CellEdge(const std::string& name, EDirection side, const Inter
 	assert(interval.first < interval.second);
 
 	init(name, side, interval);
+}
+
+Config::CellEdge::CellEdge(const std::string& name, EDirection side, const Interval& interval,
+                            SInt32 monitorIndex)
+{
+	assert(interval.first >= 0.0f);
+	assert(interval.second <= 1.0f);
+	assert(interval.first < interval.second);
+
+	init(name, side, interval);
+	m_monitorIndex = monitorIndex;
 }
 
 Config::CellEdge::~CellEdge()
@@ -1489,9 +1762,11 @@ void Config::CellEdge::init(const std::string& name, EDirection side, const Inte
 {
 	assert(side != kNoDirection);
 
-	m_name     = name;
-	m_side     = side;
-	m_interval = interval;
+	m_name            = name;
+	m_side            = side;
+	m_interval        = interval;
+	m_monitorIndex    = -1;
+	m_srcMonitorIndex = -1;
 }
 
 Config::Interval
@@ -1516,12 +1791,27 @@ Config::CellEdge::getSide() const
 	return m_side;
 }
 
+SInt32
+Config::CellEdge::getMonitorIndex() const
+{
+	return m_monitorIndex;
+}
+
+SInt32
+Config::CellEdge::getSrcMonitorIndex() const
+{
+	return m_srcMonitorIndex;
+}
+
 bool
 Config::CellEdge::overlaps(const CellEdge& edge) const
 {
 	const Interval& x = m_interval;
 	const Interval& y = edge.m_interval;
 	if (m_side != edge.m_side) {
+		return false;
+	}
+	if (m_srcMonitorIndex != edge.m_srcMonitorIndex) {
 		return false;
 	}
 	return  (x.first  >= y.first && x.first  <  y.second) ||
@@ -1559,13 +1849,23 @@ Config::CellEdge::operator<(const CellEdge& o) const
 		return false;
 	}
 
+	// whole-screen edges (-1) sort before monitor-specific ones
+	if (m_srcMonitorIndex < o.m_srcMonitorIndex) {
+		return true;
+	}
+	else if (m_srcMonitorIndex > o.m_srcMonitorIndex) {
+		return false;
+	}
+
 	return (m_interval.first < o.m_interval.first);
 }
 
 bool
 Config::CellEdge::operator==(const CellEdge& x) const
 {
-	return (m_side == x.m_side && m_interval == x.m_interval);
+	return (m_side == x.m_side && m_interval == x.m_interval &&
+			m_monitorIndex == x.m_monitorIndex &&
+			m_srcMonitorIndex == x.m_srcMonitorIndex);
 }
 
 bool
@@ -1681,6 +1981,24 @@ Config::Cell::getLink(EDirection side, float position,
 }
 
 bool
+Config::Cell::getLink(EDirection side, float position,
+				SInt32 srcMonitorIndex,
+				const CellEdge*& src, const CellEdge*& dst) const
+{
+	for (EdgeLinks::const_iterator i = m_neighbors.begin();
+								i != m_neighbors.end(); ++i) {
+		if (i->first.getSide() == side &&
+			i->first.getSrcMonitorIndex() == srcMonitorIndex &&
+			i->first.isInside(position)) {
+			src = &i->first;
+			dst = &i->second;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool
 Config::Cell::operator==(const Cell& x) const
 {
 	// compare options
@@ -1772,16 +2090,36 @@ operator<<(std::ostream& s, const Config& config)
     s << "section: links\n";
 	for (Config::const_iterator screen = config.begin();
 								screen != config.end(); ++screen) {
-        s << "\t" << screen->c_str() << ":\n";
-
+		// group edges by srcMonitorIndex: first output whole-screen (-1),
+		// then each monitor-specific group
+		typedef std::map<SInt32, std::vector<Config::link_const_iterator>> MonitorGroups;
+		MonitorGroups groups;
 		for (Config::link_const_iterator
 				link = config.beginNeighbor(*screen),
 				nend = config.endNeighbor(*screen); link != nend; ++link) {
-			s << "\t\t" << Config::dirName(link->first.getSide()) <<
-				Config::formatInterval(link->first.getInterval()) <<
-				" = " << link->second.getName().c_str() <<
-				Config::formatInterval(link->second.getInterval()) <<
-                "\n";
+			groups[link->first.getSrcMonitorIndex()].push_back(link);
+		}
+
+		for (MonitorGroups::const_iterator g = groups.begin();
+									g != groups.end(); ++g) {
+			if (g->first < 0) {
+				s << "\t" << screen->c_str() << ":\n";
+			}
+			else {
+				s << "\t" << screen->c_str() << "@" << g->first << ":\n";
+			}
+
+			for (size_t i = 0; i < g->second.size(); ++i) {
+				Config::link_const_iterator link = g->second[i];
+				s << "\t\t" << Config::dirName(link->first.getSide()) <<
+					Config::formatInterval(link->first.getInterval()) <<
+					" = " << link->second.getName().c_str();
+				if (link->second.getMonitorIndex() >= 0) {
+					s << "@" << link->second.getMonitorIndex();
+				}
+				s << Config::formatInterval(link->second.getInterval()) <<
+					"\n";
+			}
 		}
 	}
     s << "end\n";

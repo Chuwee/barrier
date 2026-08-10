@@ -39,6 +39,7 @@
 #include "base/IEventQueue.h"
 #include "base/TMethodEventJob.h"
 
+#include <algorithm>
 #include <math.h>
 #include <mach-o/dyld.h>
 #include <AvailabilityMacros.h>
@@ -255,6 +256,12 @@ OSXScreen::getCursorPos(SInt32& x, SInt32& y) const
 	m_xCursor        = x;
 	m_yCursor        = y;
 	CFRelease(event);
+}
+
+void
+OSXScreen::getMonitors(std::vector<MonitorGeometry>& monitors) const
+{
+	monitors = m_monitors;
 }
 
 void
@@ -1546,12 +1553,28 @@ OSXScreen::updateScreenShape()
 		return;
 	}
 
-	// get smallest rect enclosing all display rects
+	// get smallest rect enclosing all display rects and store individual
+	// monitor geometries
 	CGRect totalBounds = CGRectZero;
+	m_monitors.clear();
 	for (CGDisplayCount i = 0; i < displayCount; ++i) {
 		CGRect bounds = CGDisplayBounds(displays[i]);
 		totalBounds   = CGRectUnion(totalBounds, bounds);
+
+		MonitorGeometry mg;
+		mg.m_x = (SInt32)bounds.origin.x;
+		mg.m_y = (SInt32)bounds.origin.y;
+		mg.m_w = (SInt32)bounds.size.width;
+		mg.m_h = (SInt32)bounds.size.height;
+		m_monitors.push_back(mg);
 	}
+
+	// sort monitors left-to-right, top-to-bottom to match GUI index assignment
+	std::sort(m_monitors.begin(), m_monitors.end(),
+		[](const MonitorGeometry& a, const MonitorGeometry& b) {
+			if (a.m_x != b.m_x) return a.m_x < b.m_x;
+			return a.m_y < b.m_y;
+		});
 
 	// get shape of default screen
 	m_x = (SInt32)totalBounds.origin.x;
