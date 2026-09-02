@@ -85,7 +85,7 @@ ARROW_KEY_DIRECTIONS = {
 }
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 12
+AGENT_SCHEMA_VERSION = 13
 
 
 @dataclass
@@ -267,6 +267,7 @@ class EdgeRouter:
         self._pending_arrival: PendingArrival | None = None
         self._arrival_placement: ArrivalPlacement | None = None
         self._arrival_latch: ArrivalLatch | None = None
+        self._hidden_cursor_handoff_id: str | None = None
         self._hotkey_pressed: int | None = None
         self._cooldown_until = 0.0
         self._events: deque[dict[str, Any]] = deque(maxlen=120)
@@ -818,6 +819,7 @@ class EdgeRouter:
             Quartz.CGEventTapEnable(tap, False)
         if run_loop is not None:
             CoreFoundation.CFRunLoopStop(run_loop)
+        self._reveal_handoff_cursor()
 
     def restore(self) -> None:
         with self._lock:
@@ -918,8 +920,10 @@ class EdgeRouter:
             raise ValueError("handoff host does not match the active pair")
         if not 0 <= normalized <= 1:
             raise ValueError("handoff position must be normalized")
+        displays = {
+            display.key: display for display in self.displays(refresh=False)
+        }
         if destination is not None:
-            displays = {display.key for display in self.displays(refresh=False)}
             if destination.host_id != self._node_id:
                 raise ValueError("handoff destination belongs to another Mac")
             if destination.display_key not in displays:
@@ -934,15 +938,42 @@ class EdgeRouter:
                 ),
                 None,
             )
-            if connection is None or connection.route_from(self._node_id) is None:
+            route = connection.route_from(self._node_id) if connection else None
+            if route is None:
                 raise ValueError("handoff references an unavailable connection")
-            self._pending_arrival = PendingArrival(
+            if not self._armed:
+                raise ValueError("handoff destination is not armed")
+            local_endpoint, _, _ = route
+            display_key = (
+                destination.display_key
+                if destination is not None
+                else local_endpoint.display_key
+            )
+            display = displays.get(display_key)
+            if display is None:
+                raise ValueError("handoff destination display is unavailable")
+            pending = PendingArrival(
                 handoff_id=handoff_id,
                 connection_id=connection_id,
                 normalized=normalized,
                 expires_at=time.monotonic() + self._arrival_timeout_ms / 1000.0,
                 destination=destination,
             )
+            self._pending_arrival = pending
+        target = (
+            point_inside_display(
+                display,
+                destination.x_percent,
+                destination.y_percent,
+            )
+            if destination is not None
+            else point_inside_edge(
+                display,
+                local_endpoint.edge,
+                local_endpoint.position(normalized),
+            )
+        )
+        self._prime_handoff_arrival(pending, target)
         self.log(
             "handoff",
             (
@@ -970,10 +1001,82 @@ class EdgeRouter:
 
     def cancel_handoff(self, payload: dict[str, Any]) -> None:
         handoff_id = str(payload["handoff_id"])
+        cancelled = False
         with self._lock:
             pending = self._pending_arrival
             if pending is not None and pending.handoff_id == handoff_id:
                 self._pending_arrival = None
+                cancelled = True
+        if cancelled:
+            self._reveal_handoff_cursor(handoff_id)
+
+    def _prime_handoff_arrival(
+        self,
+        pending: PendingArrival,
+        target: Point,
+    ) -> None:
+        hide_error = Quartz.kCGErrorSuccess
+        with self._lock:
+            if self._pending_arrival is not pending or not self._armed:
+                return
+            should_hide = self._hidden_cursor_handoff_id is None
+            self._hidden_cursor_handoff_id = pending.handoff_id
+            if should_hide:
+                hide_error = Quartz.CGDisplayHideCursor(Quartz.CGMainDisplayID())
+                if hide_error != Quartz.kCGErrorSuccess:
+                    self._hidden_cursor_handoff_id = None
+        if hide_error != Quartz.kCGErrorSuccess:
+            self.log("handoff", f"could not mask physical UC arrival ({hide_error})")
+        self._preposition_pending_arrival(pending, target)
+        for delay in (0.012, 0.03, 0.06, 0.12):
+            timer = threading.Timer(
+                delay,
+                self._preposition_pending_arrival,
+                (pending, target),
+            )
+            timer.daemon = True
+            timer.start()
+        timeout_timer = threading.Timer(
+            max(0.0, pending.expires_at - time.monotonic()),
+            self._expire_pending_arrival,
+            (pending,),
+        )
+        timeout_timer.daemon = True
+        timeout_timer.start()
+
+    def _preposition_pending_arrival(
+        self,
+        pending: PendingArrival,
+        target: Point,
+    ) -> None:
+        with self._lock:
+            if self._pending_arrival is not pending or not self._armed:
+                return
+            self._last_point = target
+        Quartz.CGWarpMouseCursorPosition(_cg_point(target))
+
+    def _expire_pending_arrival(self, pending: PendingArrival) -> None:
+        with self._lock:
+            if self._pending_arrival is not pending:
+                return
+            self._pending_arrival = None
+        self._reveal_handoff_cursor(pending.handoff_id)
+        self.log("handoff", "handoff intent expired without UC input")
+
+    def _schedule_handoff_cursor_reveal(self, handoff_id: str) -> None:
+        timer = threading.Timer(0.018, self._reveal_handoff_cursor, (handoff_id,))
+        timer.daemon = True
+        timer.start()
+
+    def _reveal_handoff_cursor(self, handoff_id: str | None = None) -> None:
+        with self._lock:
+            hidden_handoff_id = self._hidden_cursor_handoff_id
+            if hidden_handoff_id is None:
+                return
+            if handoff_id is not None and hidden_handoff_id != handoff_id:
+                return
+            self._hidden_cursor_handoff_id = None
+        Quartz.CGDisplayShowCursor(Quartz.CGMainDisplayID())
 
     def _tap_thread(self) -> None:
         mask = 0
@@ -1457,10 +1560,7 @@ class EdgeRouter:
 
         if pending is not None:
             if now > pending.expires_at:
-                with self._lock:
-                    if self._pending_arrival is pending:
-                        self._pending_arrival = None
-                self.log("handoff", "handoff intent expired without UC input")
+                self._expire_pending_arrival(pending)
             else:
                 connection = next(
                     (item for item in connections if item.id == pending.connection_id),
@@ -1471,6 +1571,7 @@ class EdgeRouter:
                     with self._lock:
                         if self._pending_arrival is pending:
                             self._pending_arrival = None
+                    self._reveal_handoff_cursor(pending.handoff_id)
                     self.log("handoff", "discarded intent for an unavailable mapping")
                 else:
                     local_endpoint, remote_endpoint, transport = route
@@ -1746,6 +1847,7 @@ class EdgeRouter:
             placement = self._arrival_placement
             peer = self._peer
         Quartz.CGWarpMouseCursorPosition(_cg_point(target))
+        self._schedule_handoff_cursor_reveal(pending.handoff_id)
         if pending.destination is not None:
             self._schedule_placement_warps(placement)
         self._outbound.send(
