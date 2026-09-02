@@ -6,7 +6,9 @@ from edge_core import (
     Display,
     EdgeConnection,
     EdgeEndpoint,
+    HotkeyDestination,
     HostSnapshot,
+    KeyboardSwitch,
     Point,
     TransportEdge,
     boosted_transport_magnitude,
@@ -15,10 +17,12 @@ from edge_core import (
     near_edge_segment,
     outward_component,
     point_inside_edge,
+    point_inside_display,
     point_on_edge,
     should_trigger,
     target_delta,
     validate_connections,
+    validate_keyboard_switch,
 )
 from peer_transport import PeerRecord
 
@@ -113,6 +117,11 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(point_inside_edge(DISPLAY, "left", 50, 8), Point(108, 450))
         self.assertEqual(point_inside_edge(DISPLAY, "bottom", 25, 8), Point(400, 842))
 
+    def test_normalized_display_point_respects_inset(self) -> None:
+        self.assertEqual(point_inside_display(DISPLAY, 0, 0), Point(108, 58))
+        self.assertEqual(point_inside_display(DISPLAY, 100, 100), Point(1292, 842))
+        self.assertEqual(point_inside_display(DISPLAY, 50, 50), Point(700, 450))
+
     def test_point_must_be_near_transport_edge_and_inside_its_range(self) -> None:
         self.assertTrue(near_edge_segment(DISPLAY, "top", 20, 80, Point(700, 54), 8))
         self.assertFalse(near_edge_segment(DISPLAY, "top", 20, 80, Point(700, 90), 8))
@@ -206,6 +215,58 @@ class TopologyTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "disconnected display"):
             validate_connections([broken], [self.host_a, self.host_b])
+
+    def keyboard_switch(self) -> KeyboardSwitch:
+        return KeyboardSwitch(
+            connection_id="one",
+            key_code=100,
+            key_label="F8",
+            modifiers=("control", "option"),
+            a_destination=HotkeyDestination("mac-a", "display-a", 35, 65),
+            b_destination=HotkeyDestination("mac-b", "display-b", 70, 20),
+        )
+
+    def test_keyboard_switch_round_trip_and_destination_lookup(self) -> None:
+        shortcut = self.keyboard_switch()
+        restored = KeyboardSwitch.from_json(shortcut.to_json())
+        self.assertEqual(restored, shortcut)
+        self.assertEqual(restored.destination_for("mac-b"), shortcut.b_destination)
+
+    def test_keyboard_switch_validates_route_and_displays(self) -> None:
+        shortcut = validate_keyboard_switch(
+            self.keyboard_switch(),
+            [self.connection()],
+            [self.host_a, self.host_b],
+        )
+        self.assertEqual(shortcut.connection_id, "one")
+
+    def test_keyboard_switch_rejects_missing_route(self) -> None:
+        with self.assertRaisesRegex(ValueError, "missing transport route"):
+            validate_keyboard_switch(
+                self.keyboard_switch(),
+                [],
+                [self.host_a, self.host_b],
+            )
+
+    def test_keyboard_switch_requires_modifier(self) -> None:
+        with self.assertRaisesRegex(ValueError, "modifier"):
+            replace(self.keyboard_switch(), modifiers=()).validate()
+
+    def test_enabled_keyboard_switch_rejects_disabled_route(self) -> None:
+        with self.assertRaisesRegex(ValueError, "route is disabled"):
+            validate_keyboard_switch(
+                self.keyboard_switch(),
+                [replace(self.connection(), enabled=False)],
+                [self.host_a, self.host_b],
+            )
+
+    def test_disabled_keyboard_switch_can_keep_disabled_route(self) -> None:
+        shortcut = validate_keyboard_switch(
+            replace(self.keyboard_switch(), enabled=False),
+            [replace(self.connection(), enabled=False)],
+            [self.host_a, self.host_b],
+        )
+        self.assertFalse(shortcut.enabled)
 
 
 class PeerRecordTests(unittest.TestCase):

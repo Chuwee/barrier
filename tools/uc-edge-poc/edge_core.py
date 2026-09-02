@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 
 EDGES = ("left", "right", "top", "bottom")
+HOTKEY_MODIFIERS = ("control", "option", "shift", "command")
 
 
 @dataclass(frozen=True)
@@ -214,6 +215,101 @@ class EdgeConnection:
         return None
 
 
+@dataclass(frozen=True)
+class HotkeyDestination:
+    host_id: str
+    display_key: str
+    x_percent: float = 50.0
+    y_percent: float = 50.0
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_json(cls, value: dict[str, Any]) -> HotkeyDestination:
+        destination = cls(
+            host_id=str(value["host_id"]),
+            display_key=str(value["display_key"]),
+            x_percent=float(value.get("x_percent", 50.0)),
+            y_percent=float(value.get("y_percent", 50.0)),
+        )
+        destination.validate("destination")
+        return destination
+
+    def validate(self, label: str) -> None:
+        if not self.host_id or not self.display_key:
+            raise ValueError(f"{label} must reference a Mac and display")
+        if not 0 <= self.x_percent <= 100 or not 0 <= self.y_percent <= 100:
+            raise ValueError(f"{label} position must stay between 0 and 100")
+
+
+@dataclass(frozen=True)
+class KeyboardSwitch:
+    connection_id: str
+    key_code: int
+    key_label: str
+    modifiers: tuple[str, ...]
+    a_destination: HotkeyDestination
+    b_destination: HotkeyDestination
+    enabled: bool = True
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "connection_id": self.connection_id,
+            "key_code": self.key_code,
+            "key_label": self.key_label,
+            "modifiers": list(self.modifiers),
+            "a_destination": self.a_destination.to_json(),
+            "b_destination": self.b_destination.to_json(),
+            "enabled": self.enabled,
+        }
+
+    @classmethod
+    def from_json(cls, value: dict[str, Any]) -> KeyboardSwitch:
+        raw_modifiers = {str(item).lower() for item in value.get("modifiers", [])}
+        if any(modifier not in HOTKEY_MODIFIERS for modifier in raw_modifiers):
+            raise ValueError("shortcut contains an invalid modifier")
+        modifiers = tuple(
+            modifier
+            for modifier in HOTKEY_MODIFIERS
+            if modifier in raw_modifiers
+        )
+        shortcut = cls(
+            connection_id=str(value["connection_id"]),
+            key_code=int(value["key_code"]),
+            key_label=str(value.get("key_label", f"Key {value['key_code']}")),
+            modifiers=modifiers,
+            a_destination=HotkeyDestination.from_json(value["a_destination"]),
+            b_destination=HotkeyDestination.from_json(value["b_destination"]),
+            enabled=bool(value.get("enabled", True)),
+        )
+        shortcut.validate()
+        return shortcut
+
+    def validate(self) -> None:
+        if not self.connection_id:
+            raise ValueError("shortcut transport route is required")
+        if not 0 <= self.key_code <= 127:
+            raise ValueError("shortcut key code is invalid")
+        if not self.key_label or len(self.key_label) > 24:
+            raise ValueError("shortcut key label is invalid")
+        if not self.modifiers:
+            raise ValueError("shortcut requires at least one modifier")
+        if any(modifier not in HOTKEY_MODIFIERS for modifier in self.modifiers):
+            raise ValueError("shortcut contains an invalid modifier")
+        if self.a_destination.host_id == self.b_destination.host_id:
+            raise ValueError("shortcut destinations must belong to different Macs")
+        self.a_destination.validate("side A destination")
+        self.b_destination.validate("side B destination")
+
+    def destination_for(self, host_id: str) -> HotkeyDestination | None:
+        if self.a_destination.host_id == host_id:
+            return self.a_destination
+        if self.b_destination.host_id == host_id:
+            return self.b_destination
+        return None
+
+
 def clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
@@ -368,6 +464,21 @@ def point_inside_edge(
     raise ValueError(f"unknown edge: {edge}")
 
 
+def point_inside_display(
+    display: Display,
+    x_percent: float,
+    y_percent: float,
+    inset: float = 8.0,
+) -> Point:
+    inset = max(1.0, min(inset, display.width / 2.0, display.height / 2.0))
+    usable_width = max(0.0, display.width - inset * 2.0)
+    usable_height = max(0.0, display.height - inset * 2.0)
+    return Point(
+        display.x + inset + usable_width * clamp(x_percent, 0.0, 100.0) / 100.0,
+        display.y + inset + usable_height * clamp(y_percent, 0.0, 100.0) / 100.0,
+    )
+
+
 def validate_connections(
     connections: Iterable[EdgeConnection],
     hosts: Iterable[HostSnapshot],
@@ -409,3 +520,38 @@ def validate_connections(
                 occupied[key].append((low, high, connection.name))
 
     return result
+
+
+def validate_keyboard_switch(
+    shortcut: KeyboardSwitch,
+    connections: Iterable[EdgeConnection],
+    hosts: Iterable[HostSnapshot],
+) -> KeyboardSwitch:
+    shortcut.validate()
+    connection = next(
+        (item for item in connections if item.id == shortcut.connection_id),
+        None,
+    )
+    if connection is None:
+        raise ValueError("shortcut references a missing transport route")
+    if shortcut.enabled and not connection.enabled:
+        raise ValueError("shortcut transport route is disabled")
+
+    host_displays = {
+        host.id: {display.key for display in host.displays}
+        for host in hosts
+    }
+    expected_hosts = {connection.a.host_id, connection.b.host_id}
+    destination_hosts = {
+        shortcut.a_destination.host_id,
+        shortcut.b_destination.host_id,
+    }
+    if destination_hosts != expected_hosts:
+        raise ValueError("shortcut destinations do not match its transport route")
+    for destination in (shortcut.a_destination, shortcut.b_destination):
+        displays = host_displays.get(destination.host_id)
+        if displays is None:
+            raise ValueError("shortcut destination references an unknown Mac")
+        if destination.display_key not in displays:
+            raise ValueError("shortcut destination references a disconnected display")
+    return shortcut

@@ -30,7 +30,9 @@ from edge_core import (
     Display,
     EdgeConnection,
     EdgeEndpoint,
+    HotkeyDestination,
     HostSnapshot,
+    KeyboardSwitch,
     Point,
     TransportEdge,
     boosted_transport_magnitude,
@@ -39,12 +41,14 @@ from edge_core import (
     inward_delta,
     near_edge_segment,
     outward_component,
+    point_inside_display,
     point_inside_edge,
     point_on_edge,
     should_trigger,
     span_fraction,
     target_delta,
     validate_connections,
+    validate_keyboard_switch,
 )
 from peer_transport import OutboundWorker, PeerRecord, request_json
 
@@ -55,9 +59,17 @@ MOUSE_EVENT_TYPES = (
     Quartz.kCGEventRightMouseDragged,
     Quartz.kCGEventOtherMouseDragged,
 )
+KEY_EVENT_TYPES = (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp)
+HOTKEY_FLAG_MASKS = {
+    "control": Quartz.kCGEventFlagMaskControl,
+    "option": Quartz.kCGEventFlagMaskAlternate,
+    "shift": Quartz.kCGEventFlagMaskShift,
+    "command": Quartz.kCGEventFlagMaskCommand,
+}
+HOTKEY_RELEVANT_FLAGS = sum(HOTKEY_FLAG_MASKS.values())
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 8
+AGENT_SCHEMA_VERSION = 9
 
 
 @dataclass
@@ -70,6 +82,7 @@ class RedirectState:
     expires_at: float
     restore_point: Point
     event_count: int = 0
+    hotkey: bool = False
 
 
 @dataclass
@@ -79,6 +92,7 @@ class PendingArrival:
     normalized: float
     expires_at: float
     observed_events: int = 0
+    destination: HotkeyDestination | None = None
 
 
 @dataclass
@@ -208,6 +222,8 @@ class EdgeRouter:
         self._peer = PeerRecord.from_json(peer_value) if isinstance(peer_value, dict) else None
         self._connections: tuple[EdgeConnection, ...] = ()
         self._load_connections(persisted.get("connections", []))
+        self._keyboard_switch: KeyboardSwitch | None = None
+        self._load_keyboard_switch(persisted.get("keyboard_switch"))
 
         self._thread: threading.Thread | None = None
         self._tap: Any = None
@@ -221,6 +237,7 @@ class EdgeRouter:
         self._pending_arrival: PendingArrival | None = None
         self._arrival_placement: ArrivalPlacement | None = None
         self._arrival_latch: ArrivalLatch | None = None
+        self._hotkey_pressed = False
         self._cooldown_until = 0.0
         self._events: deque[dict[str, Any]] = deque(maxlen=120)
         self._callback_ref = self._handle_event
@@ -254,15 +271,26 @@ class EdgeRouter:
                 continue
         self._connections = tuple(parsed)
 
+    def _load_keyboard_switch(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        try:
+            self._keyboard_switch = KeyboardSwitch.from_json(value)
+        except (KeyError, TypeError, ValueError):
+            self._keyboard_switch = None
+
     def _save_locked(self) -> None:
         value = {
-            "version": 6,
+            "version": 7,
             "node_id": self._node_id,
             "node_name": self._node_name,
             "node_token": self._node_token,
             "pair_code": self._pair_code,
             "peer": self._peer.to_json(include_secret=True) if self._peer else None,
             "connections": [connection.to_json() for connection in self._connections],
+            "keyboard_switch": (
+                self._keyboard_switch.to_json() if self._keyboard_switch else None
+            ),
             "armed": self._armed,
             "threshold": self._threshold,
             "redirect_ms": self._redirect_ms,
@@ -315,6 +343,9 @@ class EdgeRouter:
             "token": self._node_token,
             "port": self._peer_port,
             "connections": [connection.to_json() for connection in self._connections],
+            "keyboard_switch": (
+                self._keyboard_switch.to_json() if self._keyboard_switch else None
+            ),
         }
         response = request_json(
             "POST",
@@ -341,19 +372,34 @@ class EdgeRouter:
         remote_connections = tuple(
             EdgeConnection.from_json(value) for value in response.get("connections", [])
         )
+        remote_keyboard_value = response.get("keyboard_switch")
+        remote_keyboard = (
+            KeyboardSwitch.from_json(remote_keyboard_value)
+            if isinstance(remote_keyboard_value, dict)
+            else None
+        )
         with self._lock:
             if self._peer is not None and self._peer.id != peer.id:
                 self._connections = ()
+                self._keyboard_switch = None
             self._peer = peer
             if not self._connections and remote_connections:
                 self._connections = validate_connections(
                     remote_connections,
                     (local, remote),
                 )
+            if self._keyboard_switch is None and remote_keyboard is not None:
+                self._keyboard_switch = validate_keyboard_switch(
+                    remote_keyboard,
+                    self._connections,
+                    (local, remote),
+                )
             self._save_locked()
         self.log("peer", f"paired with {remote.name} at {address}:{peer.port}")
         if self._connections:
             self._sync_connections()
+        if self._keyboard_switch:
+            self._sync_keyboard_switch()
 
     def accept_pair(
         self,
@@ -379,32 +425,51 @@ class EdgeRouter:
         incoming = tuple(
             EdgeConnection.from_json(value) for value in payload.get("connections", [])
         )
+        incoming_keyboard_value = payload.get("keyboard_switch")
+        incoming_keyboard = (
+            KeyboardSwitch.from_json(incoming_keyboard_value)
+            if isinstance(incoming_keyboard_value, dict)
+            else None
+        )
         local = self.local_host(refresh=True)
         with self._lock:
             if self._peer is not None and self._peer.id != peer.id:
                 self._connections = ()
+                self._keyboard_switch = None
             self._peer = peer
             if not self._connections and incoming:
                 self._connections = validate_connections(incoming, (local, remote))
+            if self._keyboard_switch is None and incoming_keyboard is not None:
+                self._keyboard_switch = validate_keyboard_switch(
+                    incoming_keyboard,
+                    self._connections,
+                    (local, remote),
+                )
             self._save_locked()
             connections = [connection.to_json() for connection in self._connections]
+            keyboard_switch = (
+                self._keyboard_switch.to_json() if self._keyboard_switch else None
+            )
         self.log("peer", f"accepted pairing from {remote.name}")
         return {
             "host": local.to_json(),
             "token": self._node_token,
             "port": self._peer_port,
             "connections": connections,
+            "keyboard_switch": keyboard_switch,
         }
 
     def disconnect_peer(self) -> None:
         with self._lock:
             self._peer = None
             self._connections = ()
+            self._keyboard_switch = None
             self._armed = False
             self._pending_arrival = None
             self._redirect = None
             self._arrival_placement = None
             self._arrival_latch = None
+            self._hotkey_pressed = False
             self._save_locked()
         self.stop_tap()
         self.log("peer", "peer disconnected; routing disarmed")
@@ -477,6 +542,9 @@ class EdgeRouter:
                 "pending_arrival": self._pending_arrival is not None,
                 "placing_arrival": self._arrival_placement is not None,
                 "arrival_latched": self._arrival_latch is not None,
+                "keyboard_switch": (
+                    self._keyboard_switch.to_json() if self._keyboard_switch else None
+                ),
                 "events": list(self._events)[:40],
             }
 
@@ -486,8 +554,24 @@ class EdgeRouter:
     def replace_connections(self, values: list[dict[str, Any]], sync: bool = True) -> None:
         connections = tuple(EdgeConnection.from_json(value) for value in values)
         connections = validate_connections(connections, self._hosts_for_validation())
+        keyboard_changed = False
         with self._lock:
             self._connections = connections
+            if self._keyboard_switch is not None:
+                route = next(
+                    (
+                        item
+                        for item in connections
+                        if item.id == self._keyboard_switch.connection_id
+                    ),
+                    None,
+                )
+                if route is None:
+                    self._keyboard_switch = None
+                    keyboard_changed = True
+                elif not route.enabled and self._keyboard_switch.enabled:
+                    self._keyboard_switch = replace(self._keyboard_switch, enabled=False)
+                    keyboard_changed = True
             self._redirect = None
             self._arrival_placement = None
             self._arrival_latch = None
@@ -495,11 +579,42 @@ class EdgeRouter:
         self.log("config", f"saved {len(connections)} bidirectional edge mapping(s)")
         if sync:
             self._sync_connections()
+            if keyboard_changed:
+                self._sync_keyboard_switch()
 
     def _sync_connections(self) -> None:
         self._outbound.send(
             "/peer/connections",
             {"connections": [connection.to_json() for connection in self._connections]},
+        )
+
+    def replace_keyboard_switch(self, value: Any, sync: bool = True) -> None:
+        shortcut = KeyboardSwitch.from_json(value) if isinstance(value, dict) else None
+        if shortcut is not None:
+            shortcut = validate_keyboard_switch(
+                shortcut,
+                self._connections,
+                self._hosts_for_validation(),
+            )
+        with self._lock:
+            self._keyboard_switch = shortcut
+            self._hotkey_pressed = False
+            self._save_locked()
+        self.log(
+            "config",
+            "keyboard switch saved" if shortcut else "keyboard switch cleared",
+        )
+        if sync:
+            self._sync_keyboard_switch()
+
+    def _sync_keyboard_switch(self) -> None:
+        self._outbound.send(
+            "/peer/keyboard-switch",
+            {
+                "keyboard_switch": (
+                    self._keyboard_switch.to_json() if self._keyboard_switch else None
+                )
+            },
         )
 
     def set_armed(self, armed: bool, sync: bool = True) -> None:
@@ -510,6 +625,7 @@ class EdgeRouter:
                 self._pending_arrival = None
                 self._arrival_placement = None
                 self._arrival_latch = None
+                self._hotkey_pressed = False
             self._save_locked()
         if armed:
             self.start_tap()
@@ -592,6 +708,9 @@ class EdgeRouter:
                 "local": local.to_json(),
                 "peer": peer.to_json() if peer else None,
                 "connections": [connection.to_json() for connection in self._connections],
+                "keyboard_switch": (
+                    self._keyboard_switch.to_json() if self._keyboard_switch else None
+                ),
                 "armed": self._armed,
                 "tap": {
                     "running": thread_alive and self._tap is not None,
@@ -627,11 +746,23 @@ class EdgeRouter:
         source_host = str(payload["source_host"])
         target_host = str(payload["target_host"])
         normalized = float(payload["normalized"])
+        destination_value = payload.get("destination")
+        destination = (
+            HotkeyDestination.from_json(destination_value)
+            if isinstance(destination_value, dict)
+            else None
+        )
         peer = self.peer()
         if target_host != self._node_id or peer is None or source_host != peer.id:
             raise ValueError("handoff host does not match the active pair")
         if not 0 <= normalized <= 1:
             raise ValueError("handoff position must be normalized")
+        if destination is not None:
+            displays = {display.key for display in self.displays(refresh=False)}
+            if destination.host_id != self._node_id:
+                raise ValueError("handoff destination belongs to another Mac")
+            if destination.display_key not in displays:
+                raise ValueError("handoff destination display is unavailable")
         with self._lock:
             connection = next(
                 (
@@ -648,10 +779,15 @@ class EdgeRouter:
                 connection_id=connection_id,
                 normalized=normalized,
                 expires_at=time.monotonic() + self._arrival_timeout_ms / 1000.0,
+                destination=destination,
             )
         self.log(
             "handoff",
-            f"handoff intent received at {normalized * 100:.1f}%; waiting for UC input",
+            (
+                "keyboard handoff intent received; waiting for UC input"
+                if destination is not None
+                else f"handoff intent received at {normalized * 100:.1f}%; waiting for UC input"
+            ),
         )
 
     def complete_handoff(self, payload: dict[str, Any]) -> None:
@@ -666,6 +802,7 @@ class EdgeRouter:
             if redirect is None or redirect.handoff_id != handoff_id:
                 return
             self._redirect = None
+            self._hotkey_pressed = False
             self._cooldown_until = time.monotonic() + self._cooldown_ms / 1000.0
         self.log("handoff", "Universal Control transfer confirmed by peer")
 
@@ -678,7 +815,7 @@ class EdgeRouter:
 
     def _tap_thread(self) -> None:
         mask = 0
-        for event_type in MOUSE_EVENT_TYPES:
+        for event_type in MOUSE_EVENT_TYPES + KEY_EVENT_TYPES:
             mask |= 1 << int(event_type)
 
         tap = None
@@ -753,6 +890,15 @@ class EdgeRouter:
                 Quartz.CGEventTapEnable(tap, True)
             self.log("tap", "event tap was disabled and has been re-enabled")
             return event
+        if event_type in KEY_EVENT_TYPES:
+            try:
+                return self._route_key_event(event_type, event)
+            except Exception as exc:  # Never break the system input stream.
+                with self._lock:
+                    self._error = f"keyboard callback error: {exc}"
+                    self._hotkey_pressed = False
+                self.log("error", self._error)
+                return event
         if event_type not in MOUSE_EVENT_TYPES:
             return event
         try:
@@ -765,6 +911,171 @@ class EdgeRouter:
                 self._arrival_latch = None
             self.log("error", self._error)
             return event
+
+    def _route_key_event(self, event_type: int, event: Any) -> Any:
+        key_code = int(
+            Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+        )
+        with self._lock:
+            shortcut = self._keyboard_switch
+            armed = self._armed
+            pressed = self._hotkey_pressed
+
+        if event_type == Quartz.kCGEventKeyUp:
+            if shortcut is not None and key_code == shortcut.key_code and pressed:
+                with self._lock:
+                    self._hotkey_pressed = False
+                return None
+            return event
+        if shortcut is None or not shortcut.enabled or not armed:
+            return event
+        expected_flags = sum(HOTKEY_FLAG_MASKS[item] for item in shortcut.modifiers)
+        actual_flags = int(Quartz.CGEventGetFlags(event)) & HOTKEY_RELEVANT_FLAGS
+        if key_code != shortcut.key_code or actual_flags != expected_flags:
+            return event
+        is_repeat = bool(
+            Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventAutorepeat)
+        )
+        if not pressed and not is_repeat:
+            with self._lock:
+                self._hotkey_pressed = True
+            self._begin_keyboard_handoff(shortcut)
+        return None
+
+    def _begin_keyboard_handoff(self, shortcut: KeyboardSwitch) -> None:
+        now = time.monotonic()
+        with self._lock:
+            peer = self._peer
+            connection = next(
+                (
+                    item
+                    for item in self._connections
+                    if item.id == shortcut.connection_id and item.enabled
+                ),
+                None,
+            )
+            if self._redirect is not None or now < self._cooldown_until:
+                self.log("keyboard", "switch ignored while another handoff is settling")
+                return
+        if peer is None or not peer.connected:
+            self.log("keyboard", "switch ignored because the paired Mac is offline")
+            return
+        route = connection.route_from(self._node_id) if connection else None
+        destination = shortcut.destination_for(peer.id)
+        if route is None or destination is None:
+            self.log("keyboard", "switch references an unavailable route")
+            return
+        _, route_destination, transport = route
+        if route_destination.host_id != peer.id:
+            self.log("keyboard", "switch route does not lead to the paired Mac")
+            return
+        displays = {display.key: display for display in self.displays(refresh=False)}
+        if transport.display_key not in displays:
+            self.log("keyboard", "switch transport display is unavailable")
+            return
+
+        location = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        restore_point = Point(float(location.x), float(location.y))
+        redirect = RedirectState(
+            handoff_id=uuid.uuid4().hex,
+            connection_id=connection.id,
+            source_edge=transport.edge,
+            transport=transport,
+            normalized=0.5,
+            expires_at=now + self._redirect_ms / 1000.0,
+            restore_point=restore_point,
+            hotkey=True,
+        )
+        with self._lock:
+            self._redirect = redirect
+            self._pending_arrival = None
+            self._last_restore_point = restore_point
+        self._outbound.send(
+            "/peer/handoff",
+            {
+                "handoff_id": redirect.handoff_id,
+                "connection_id": connection.id,
+                "source_host": self._node_id,
+                "target_host": peer.id,
+                "normalized": redirect.normalized,
+                "destination": destination.to_json(),
+            },
+        )
+        self.log(
+            "keyboard",
+            f"{shortcut.key_label}: switching to {peer.name} via {connection.name}",
+        )
+        release_timer = threading.Timer(0.75, self._release_keyboard_latch)
+        release_timer.daemon = True
+        release_timer.start()
+        timeout_timer = threading.Timer(
+            self._redirect_ms / 1000.0,
+            self._expire_keyboard_redirect,
+            (redirect,),
+        )
+        timeout_timer.daemon = True
+        timeout_timer.start()
+        for delay in (0.0, 0.012, 0.024, 0.038, 0.054, 0.072, 0.094, 0.12, 0.15):
+            timer = threading.Timer(delay, self._post_keyboard_transport_event, (redirect,))
+            timer.daemon = True
+            timer.start()
+
+    def _release_keyboard_latch(self) -> None:
+        with self._lock:
+            self._hotkey_pressed = False
+
+    def _expire_keyboard_redirect(self, redirect: RedirectState) -> None:
+        with self._lock:
+            if self._redirect is not redirect:
+                return
+            self._redirect = None
+            self._last_point = redirect.restore_point
+            self._cooldown_until = time.monotonic() + self._cooldown_ms / 1000.0
+        Quartz.CGWarpMouseCursorPosition(_cg_point(redirect.restore_point))
+        self._outbound.send(
+            "/peer/handoff/cancel",
+            {"handoff_id": redirect.handoff_id},
+        )
+        self.log(
+            "keyboard",
+            "UC switch was not confirmed; restored the original cursor position",
+        )
+
+    def _post_keyboard_transport_event(self, redirect: RedirectState) -> None:
+        with self._lock:
+            if self._redirect is not redirect or not self._armed:
+                return
+            display = next(
+                (
+                    item
+                    for item in self._display_cache
+                    if item.key == redirect.transport.display_key
+                ),
+                None,
+            )
+        if display is None:
+            return
+        target = point_on_edge(
+            display,
+            redirect.transport.edge,
+            redirect.transport.position(redirect.normalized),
+        )
+        magnitude = boosted_transport_magnitude(
+            self._transport_min_delta,
+            self._transport_gain,
+            self._transport_min_delta,
+            self._transport_max_delta,
+        )
+        dx, dy = target_delta(redirect.transport.edge, magnitude)
+        event = Quartz.CGEventCreateMouseEvent(
+            None,
+            Quartz.kCGEventMouseMoved,
+            _cg_point(target),
+            Quartz.kCGMouseButtonLeft,
+        )
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, int(dx))
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, int(dy))
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
     def _route_mouse_event(self, event: Any) -> Any:
         location = Quartz.CGEventGetLocation(event)
@@ -841,8 +1152,13 @@ class EdgeRouter:
                             self._pending_arrival = None
                     self.log("handoff", "discarded intent for an unavailable mapping")
                 else:
-                    destination, _, transport = route
-                    display = displays.get(destination.display_key)
+                    local_endpoint, _, transport = route
+                    display_key = (
+                        pending.destination.display_key
+                        if pending.destination is not None
+                        else local_endpoint.display_key
+                    )
+                    display = displays.get(display_key)
                     transport_display = displays.get(transport.display_key)
                     if (
                         display is not None
@@ -858,7 +1174,7 @@ class EdgeRouter:
                     ):
                         return self._apply_arrival(
                             event,
-                            destination,
+                            local_endpoint,
                             display,
                             pending,
                             dx,
@@ -903,7 +1219,7 @@ class EdgeRouter:
                 )
                 return event
             outward = outward_component(redirect.source_edge, dx, dy)
-            if outward < -0.5:
+            if outward < -0.5 and not redirect.hotkey:
                 Quartz.CGEventSetLocation(event, _cg_point(redirect.restore_point))
                 Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, 0)
                 Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, 0)
@@ -1052,13 +1368,21 @@ class EdgeRouter:
                 Quartz.kCGEventSourceUnixProcessID,
             )
         )
-        target = point_inside_edge(
-            display,
-            destination.edge,
-            destination.position(pending.normalized),
-        )
-        magnitude = max(abs(dx), abs(dy), 1.0)
-        target_dx, target_dy = inward_delta(destination.edge, magnitude)
+        if pending.destination is not None:
+            target = point_inside_display(
+                display,
+                pending.destination.x_percent,
+                pending.destination.y_percent,
+            )
+            target_dx, target_dy = 0.0, 0.0
+        else:
+            target = point_inside_edge(
+                display,
+                destination.edge,
+                destination.position(pending.normalized),
+            )
+            magnitude = max(abs(dx), abs(dy), 1.0)
+            target_dx, target_dy = inward_delta(destination.edge, magnitude)
         Quartz.CGEventSetLocation(event, _cg_point(target))
         Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, int(target_dx))
         Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, int(target_dy))
@@ -1073,9 +1397,13 @@ class EdgeRouter:
                 point=target,
                 expires_at=now + self._arrival_guard_ms / 1000.0,
             )
-            self._arrival_latch = ArrivalLatch(
-                display_key=display.key,
-                edge=destination.edge,
+            self._arrival_latch = (
+                None
+                if pending.destination is not None
+                else ArrivalLatch(
+                    display_key=display.key,
+                    edge=destination.edge,
+                )
             )
             placement = self._arrival_placement
             peer = self._peer
@@ -1090,11 +1418,16 @@ class EdgeRouter:
                 "target_host": self._node_id,
             },
         )
+        arrival_description = (
+            f"placed keyboard switch on {display.name} at "
+            f"{pending.destination.x_percent:.1f}%,{pending.destination.y_percent:.1f}% "
+            if pending.destination is not None
+            else f"placed cursor on {display.name} {destination.edge} at "
+            f"{destination.position(pending.normalized):.1f}% "
+        )
         self.log(
             "arrival",
-            f"placed cursor on {display.name} {destination.edge} at "
-            f"{destination.position(pending.normalized):.1f}% "
-            f"({target.x:.0f},{target.y:.0f}) from "
+            f"{arrival_description}({target.x:.0f},{target.y:.0f}) from "
             f"({float(source.x):.0f},{float(source.y):.0f}), pid {source_pid}",
         )
         return event
@@ -1237,6 +1570,10 @@ class UiHandler(JsonHandler):
                 if not isinstance(values, list):
                     raise ValueError("connections must be a list")
                 self.server.router.replace_connections(values)
+            elif self.path == "/api/keyboard-switch":
+                self.server.router.replace_keyboard_switch(
+                    payload.get("keyboard_switch")
+                )
             elif self.path == "/api/routing/activate":
                 self.server.router.set_armed(True)
             elif self.path == "/api/routing/stop":
@@ -1293,6 +1630,11 @@ class PeerHandler(JsonHandler):
                 if not isinstance(values, list):
                     raise ValueError("connections must be a list")
                 self.server.router.replace_connections(values, sync=False)
+            elif self.path == "/peer/keyboard-switch":
+                self.server.router.replace_keyboard_switch(
+                    payload.get("keyboard_switch"),
+                    sync=False,
+                )
             elif self.path == "/peer/routing":
                 self.server.router.set_armed(bool(payload.get("armed")), sync=False)
             elif self.path == "/peer/handoff":

@@ -36,6 +36,7 @@
         <div class="legend">
           <span><i class="logical"></i> Logical handoff</span>
           <span><i class="transport"></i> Hidden UC transport</span>
+          <span><i class="landing"></i> Shortcut landing</span>
         </div>
       </div>
       <p class="topology-help"><strong>Click any display edge</strong> to select it. Drag the endpoint handles to set overlap, or drag the highlighted range to move it.</p>
@@ -110,6 +111,49 @@
         <div id="runtime-message" class="message"></div>
       </section>
     </div>
+
+    <section class="shortcut-card">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Keyboard switch</span>
+          <h2>Jump without touching an edge</h2>
+        </div>
+        <label class="toggle-label"><input id="shortcut-enabled" type="checkbox" checked> Enabled</label>
+      </div>
+      <p class="muted">The same global shortcut works in either direction. It uses one existing mapping as the hidden Universal Control transport, then lands at the position selected for the destination Mac.</p>
+      <div class="shortcut-grid">
+        <fieldset class="shortcut-binding">
+          <legend>Global shortcut</legend>
+          <div class="modifier-row">
+            <label><input id="shortcut-control" type="checkbox" checked> Control</label>
+            <label><input id="shortcut-option" type="checkbox" checked> Option</label>
+            <label><input id="shortcut-shift" type="checkbox"> Shift</label>
+            <label><input id="shortcut-command" type="checkbox"> Command</label>
+          </div>
+          <div class="binding-row">
+            <label>Key<select id="shortcut-key"></select></label>
+            <label>UC transport route<select id="shortcut-route"></select></label>
+          </div>
+        </fieldset>
+        <div class="landing-grid">
+          <fieldset>
+            <legend id="shortcut-a-label">This Mac landing</legend>
+            <label>Display<select id="shortcut-a-display"></select></label>
+            <div class="position-row"><label>Horizontal %<input id="shortcut-a-x" type="number" min="0" max="100" step="0.1" value="50"></label><label>Vertical %<input id="shortcut-a-y" type="number" min="0" max="100" step="0.1" value="50"></label></div>
+          </fieldset>
+          <fieldset>
+            <legend id="shortcut-b-label">Remote Mac landing</legend>
+            <label>Display<select id="shortcut-b-display"></select></label>
+            <div class="position-row"><label>Horizontal %<input id="shortcut-b-x" type="number" min="0" max="100" step="0.1" value="50"></label><label>Vertical %<input id="shortcut-b-y" type="number" min="0" max="100" step="0.1" value="50"></label></div>
+          </fieldset>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="save-shortcut" type="button">Save keyboard switch</button>
+        <button id="clear-shortcut" class="text-button" type="button">Remove shortcut</button>
+        <span id="shortcut-message" class="message"></span>
+      </div>
+    </section>
 
     <section class="connections-card">
       <div class="section-head compact"><div><span class="eyebrow">Compiled routes</span><h2>Edge mappings</h2></div><span id="connection-count" class="count">0</span></div>

@@ -1,10 +1,22 @@
 const EDGES = ["left", "right", "top", "bottom"];
+const HOTKEYS = [
+  ["F1", 122], ["F2", 120], ["F3", 99], ["F4", 118], ["F5", 96], ["F6", 97],
+  ["F7", 98], ["F8", 100], ["F9", 101], ["F10", 109], ["F11", 103], ["F12", 111],
+  ["A", 0], ["B", 11], ["C", 8], ["D", 2], ["E", 14], ["F", 3], ["G", 5],
+  ["H", 4], ["I", 34], ["J", 38], ["K", 40], ["L", 37], ["M", 46], ["N", 45],
+  ["O", 31], ["P", 35], ["Q", 12], ["R", 15], ["S", 1], ["T", 17], ["U", 32],
+  ["V", 9], ["W", 13], ["X", 7], ["Y", 16], ["Z", 6],
+  ["0", 29], ["1", 18], ["2", 19], ["3", 20], ["4", 21], ["5", 23], ["6", 22],
+  ["7", 26], ["8", 28], ["9", 25], ["Left Arrow", 123], ["Right Arrow", 124],
+  ["Down Arrow", 125], ["Up Arrow", 126], ["Space", 49],
+].map(([label, value]) => ({label, value}));
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 
 let state = null;
 let editId = null;
 let formSignature = "";
+let shortcutSignature = "";
 let topologyLayouts = new Map();
 let dragState = null;
 
@@ -61,6 +73,53 @@ function initializeFormOptions(force = false) {
   $("b-host-label").textContent = peerHost?.name || "Remote Mac";
   $("b-transport-label").textContent = `${peerHost?.name || "Remote Mac"} transport`;
   $("save-mapping").disabled = !peerHost;
+}
+
+function destinationForHost(shortcut, hostId) {
+  if (shortcut?.a_destination?.host_id === hostId) return shortcut.a_destination;
+  if (shortcut?.b_destination?.host_id === hostId) return shortcut.b_destination;
+  return null;
+}
+
+function initializeShortcutOptions(force = false) {
+  if (!state) return;
+  const peerHost = state.peer ? {id: state.peer.id, name: state.peer.name, displays: state.peer.displays} : null;
+  const signature = JSON.stringify({
+    local: state.local.displays.map((display) => display.key),
+    peer: peerHost?.displays.map((display) => display.key),
+    connections: state.connections.map((connection) => [connection.id, connection.name, connection.enabled]),
+    shortcut: state.keyboard_switch,
+  });
+  if (!force && signature === shortcutSignature) return;
+  shortcutSignature = signature;
+  const shortcut = state.keyboard_switch;
+  const localDestination = destinationForHost(shortcut, state.local.id);
+  const remoteDestination = destinationForHost(shortcut, peerHost?.id);
+  setOptions($("shortcut-key"), HOTKEYS, "No keys", shortcut?.key_code ?? 100);
+  setOptions(
+    $("shortcut-route"),
+    state.connections.map((connection) => ({
+      value: connection.id,
+      label: `${connection.name}${connection.enabled ? "" : " (disabled)"}`,
+    })),
+    "Create an edge mapping first",
+    shortcut?.connection_id,
+  );
+  setOptions($("shortcut-a-display"), displayOptions(state.local), "No local displays", localDestination?.display_key);
+  setOptions($("shortcut-b-display"), displayOptions(peerHost), "Pair a Mac first", remoteDestination?.display_key);
+  $("shortcut-a-label").textContent = `${state.local.name} landing`;
+  $("shortcut-b-label").textContent = `${peerHost?.name || "Remote Mac"} landing`;
+  $("shortcut-enabled").checked = shortcut?.enabled ?? true;
+  for (const modifier of ["control", "option", "shift", "command"]) {
+    const defaults = modifier === "control" || modifier === "option";
+    $(`shortcut-${modifier}`).checked = shortcut ? shortcut.modifiers.includes(modifier) : defaults;
+  }
+  field("shortcut-a-x", localDestination?.x_percent ?? 50);
+  field("shortcut-a-y", localDestination?.y_percent ?? 50);
+  field("shortcut-b-x", remoteDestination?.x_percent ?? 50);
+  field("shortcut-b-y", remoteDestination?.y_percent ?? 50);
+  $("save-shortcut").disabled = !peerHost || !state.connections.length;
+  $("clear-shortcut").disabled = !shortcut;
 }
 
 function renderStatus() {
@@ -160,6 +219,34 @@ function drawSegment(rect, endpoint, className) {
   if (!rect) return "";
   const points = segment(rect, endpoint.edge, endpoint.start, endpoint.end);
   return `<line class="${className}" x1="${points[0].x}" y1="${points[0].y}" x2="${points[1].x}" y2="${points[1].y}"/>`;
+}
+
+function landingPoint(layouts, destination) {
+  const rect = layouts.get(destination?.host_id)?.rects.get(destination?.display_key);
+  if (!rect) return null;
+  return {
+    x: rect.x + rect.width * Math.max(0, Math.min(100, destination.x_percent)) / 100,
+    y: rect.y + rect.height * Math.max(0, Math.min(100, destination.y_percent)) / 100,
+  };
+}
+
+function drawKeyboardLandings(layouts) {
+  let shortcut = state.keyboard_switch;
+  try { shortcut = formKeyboardSwitch(); }
+  catch (_) { /* Keep the saved visualization while the form is incomplete. */ }
+  if (!shortcut) return "";
+  const destinations = [shortcut.a_destination, shortcut.b_destination];
+  const points = destinations.map((destination) => landingPoint(layouts, destination));
+  let html = "";
+  if (points[0] && points[1]) {
+    html += `<path class="landing-link" d="M ${points[0].x} ${points[0].y} C 570 ${points[0].y}, 630 ${points[1].y}, ${points[1].x} ${points[1].y}"/>`;
+  }
+  for (const point of points.filter(Boolean)) {
+    html += `<circle class="landing-ring" cx="${point.x}" cy="${point.y}" r="9"/>`;
+    html += `<path class="landing-cross" d="M ${point.x - 13} ${point.y} H ${point.x + 13} M ${point.x} ${point.y - 13} V ${point.y + 13}"/>`;
+    html += `<text class="landing-label" x="${point.x + 14}" y="${point.y - 12}">${esc(shortcut.key_label)}</text>`;
+  }
+  return html;
 }
 
 function rangesOverlap(first, second) {
@@ -287,7 +374,8 @@ function renderTopology() {
       : `${draft.a.start}→${draft.a.end}% maps proportionally to ${draft.b.start}→${draft.b.end}%.`;
   }
   const hits = edgeHits(state.local, left, "a") + edgeHits(remote, right, "b");
-  svg.innerHTML = left.svg + right.svg + transports + routes + hits + draftHtml;
+  const landings = drawKeyboardLandings(layouts);
+  svg.innerHTML = left.svg + right.svg + transports + routes + landings + hits + draftHtml;
   bindTopologyTargets();
 }
 
@@ -422,6 +510,7 @@ function render(next) {
   renderStatus();
   renderPairPanel();
   initializeFormOptions();
+  initializeShortcutOptions();
   if (!dragState) renderTopology();
   renderConnections();
   renderEvents();
@@ -499,6 +588,57 @@ function formConnection(id = editId || "draft-preview") {
   };
 }
 
+function shortcutDestination(prefix, hostId) {
+  const destination = {
+    host_id: hostId,
+    display_key: $(`shortcut-${prefix}-display`).value,
+    x_percent: Number($(`shortcut-${prefix}-x`).value),
+    y_percent: Number($(`shortcut-${prefix}-y`).value),
+  };
+  if (!destination.display_key) throw new Error("Choose a landing display on both Macs");
+  if (![destination.x_percent, destination.y_percent].every((value) => Number.isFinite(value) && value >= 0 && value <= 100)) {
+    throw new Error("Landing positions must stay between 0 and 100%");
+  }
+  return destination;
+}
+
+function formKeyboardSwitch() {
+  if (!state.peer) throw new Error("Pair the other Mac first");
+  const keyCode = Number($("shortcut-key").value);
+  const key = HOTKEYS.find((item) => item.value === keyCode);
+  if (!key) throw new Error("Choose a shortcut key");
+  if (!$("shortcut-route").value) throw new Error("Choose a UC transport route");
+  return {
+    connection_id: $("shortcut-route").value,
+    key_code: keyCode,
+    key_label: key.label,
+    modifiers: ["control", "option", "shift", "command"].filter((modifier) => $(`shortcut-${modifier}`).checked),
+    a_destination: shortcutDestination("a", state.local.id),
+    b_destination: shortcutDestination("b", state.peer.id),
+    enabled: $("shortcut-enabled").checked,
+  };
+}
+
+async function saveKeyboardSwitch() {
+  try {
+    const keyboardSwitch = formKeyboardSwitch();
+    if (!keyboardSwitch.modifiers.length) throw new Error("Choose at least one modifier key");
+    await api("/api/keyboard-switch", {keyboard_switch: keyboardSwitch});
+    message("shortcut-message", "Keyboard switch saved and synchronized.");
+    shortcutSignature = "";
+    await refresh();
+  } catch (error) { message("shortcut-message", error.message); }
+}
+
+async function clearKeyboardSwitch() {
+  try {
+    await api("/api/keyboard-switch", {keyboard_switch: null});
+    message("shortcut-message", "Keyboard switch removed.");
+    shortcutSignature = "";
+    await refresh();
+  } catch (error) { message("shortcut-message", error.message); }
+}
+
 async function saveMapping() {
   try {
     const id = editId || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
@@ -545,6 +685,8 @@ async function refresh() {
 
 $("save-mapping").onclick = saveMapping;
 $("clear-edit").onclick = clearEditor;
+$("save-shortcut").onclick = saveKeyboardSwitch;
+$("clear-shortcut").onclick = clearKeyboardSwitch;
 $("activate").onclick = () => routing("/api/routing/activate", "Routing activation sent to both Macs.");
 $("stop").onclick = () => routing("/api/routing/stop", "Routing stopped on both Macs.");
 $("restore").onclick = () => routing("/api/restore", "Emergency stop requested.");
@@ -553,6 +695,9 @@ $("topology").addEventListener("pointermove", moveDraft);
 $("topology").addEventListener("pointerup", finishDraftMove);
 $("topology").addEventListener("pointercancel", finishDraftMove);
 for (const id of ["a-display", "a-edge", "a-start", "a-end", "b-display", "b-edge", "b-start", "b-end", "at-display", "at-edge", "at-start", "at-end", "bt-display", "bt-edge", "bt-start", "bt-end"]) {
+  $(id).addEventListener("input", () => state?.peer && renderTopology());
+}
+for (const id of ["shortcut-a-display", "shortcut-a-x", "shortcut-a-y", "shortcut-b-display", "shortcut-b-x", "shortcut-b-y", "shortcut-key"]) {
   $(id).addEventListener("input", () => state?.peer && renderTopology());
 }
 window.addEventListener("resize", () => state && renderTopology());

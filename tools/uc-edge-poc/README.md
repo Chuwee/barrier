@@ -16,6 +16,7 @@ The paired version supports:
   overlap conflict feedback.
 - Separate hidden Universal Control transport ranges for each direction.
 - A unified web topology that visualizes logical and transport edges.
+- A synchronized global keyboard switch with per-Mac display and landing point.
 - Persistent pairing, mappings, and armed state.
 
 ## Requirements
@@ -55,6 +56,19 @@ restarting the process after granting permissions.
 6. Push through either logical edge. The source agent redirects the physical
    event to the hidden UC edge, and the receiving agent places the cursor at the
    proportionally mapped destination point.
+
+## Keyboard switch
+
+After creating at least one edge mapping, use **Keyboard switch** to choose a
+global modifier/key combination and the mapping whose real Universal Control
+edges should carry the switch. Choose a destination display plus horizontal and
+vertical landing percentages for each Mac, then save and activate routing.
+
+The shortcut works in both directions and remains independent of the logical
+edge ranges. Its crosshairs in the topology show the two saved landing points.
+At least one modifier is required, and the shortcut is consumed by Edge Lab
+instead of being delivered to the foreground application. Deleting its selected
+mapping removes the shortcut; disabling that mapping also disables the shortcut.
 
 The receiving agent confirms that Universal Control delivered input at its real
 transport edge before moving the pointer to the logical destination. It then
