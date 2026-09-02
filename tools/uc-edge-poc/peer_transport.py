@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import queue
+import socket
 import threading
 import urllib.error
 import urllib.request
@@ -23,6 +25,7 @@ class PeerRecord:
     address: str
     port: int
     token: str
+    resolved_address: str | None = None
     displays: tuple[Display, ...] = ()
     connected: bool = False
     last_seen: float | None = None
@@ -35,6 +38,10 @@ class PeerRecord:
     @property
     def host(self) -> HostSnapshot:
         return HostSnapshot(self.id, self.name, tuple(self.displays))
+
+    @property
+    def connection_address(self) -> str:
+        return self.resolved_address or self.address
 
     def to_json(self, include_secret: bool = False) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -53,6 +60,7 @@ class PeerRecord:
         }
         if include_secret:
             value["token"] = self.token
+            value["resolved_address"] = self.resolved_address
         return value
 
     @classmethod
@@ -70,6 +78,11 @@ class PeerRecord:
             address=str(value["address"]),
             port=int(value.get("port", 8766)),
             token=str(value["token"]),
+            resolved_address=(
+                str(value["resolved_address"])
+                if value.get("resolved_address")
+                else None
+            ),
             displays=host.displays,
         )
 
@@ -100,6 +113,29 @@ class PeerRecord:
             listen_access=permissions.get("listen"),
         )
 
+
+def resolve_peer_address(address: str, port: int) -> str:
+    """Resolve a peer once so latency-sensitive requests bypass repeated mDNS."""
+    address = address.strip()
+    try:
+        ipaddress.ip_address(address.split("%", 1)[0])
+        return address
+    except ValueError:
+        pass
+
+    try:
+        results = socket.getaddrinfo(address, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return address
+    ipv4 = [item[4][0] for item in results if item[0] == socket.AF_INET]
+    if ipv4:
+        return ipv4[0]
+    ipv6 = [
+        item[4][0]
+        for item in results
+        if item[0] == socket.AF_INET6 and not item[4][0].lower().startswith("fe80:")
+    ]
+    return ipv6[0] if ipv6 else address
 
 def _base_url(address: str, port: int) -> str:
     address = address.strip()
@@ -210,7 +246,7 @@ class OutboundWorker:
             try:
                 request_json(
                     "POST",
-                    peer.address,
+                    peer.connection_address,
                     peer.port,
                     path,
                     payload=payload,

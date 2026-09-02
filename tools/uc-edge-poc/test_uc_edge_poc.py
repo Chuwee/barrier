@@ -1,3 +1,4 @@
+import socket
 import threading
 import time
 import unittest
@@ -31,7 +32,7 @@ from edge_core import (
     validate_directional_navigation,
     validate_keyboard_switch,
 )
-from peer_transport import OutboundWorker, PeerRecord
+from peer_transport import OutboundWorker, PeerRecord, resolve_peer_address
 
 
 DISPLAY = Display(
@@ -411,6 +412,31 @@ class PeerRecordTests(unittest.TestCase):
         self.assertTrue(updated.tap_running)
         self.assertEqual(updated.tap_level, "HID")
         self.assertTrue(updated.listen_access)
+
+    def test_connection_address_prefers_persisted_numeric_address(self) -> None:
+        peer = PeerRecord(
+            id="mac-b",
+            name="iMac",
+            address="imac.local",
+            port=8766,
+            token="secret-token",
+            resolved_address="192.168.1.20",
+        )
+        self.assertEqual(peer.connection_address, "192.168.1.20")
+        self.assertNotIn("resolved_address", peer.to_json())
+        restored = PeerRecord.from_json(peer.to_json(include_secret=True))
+        self.assertEqual(restored.connection_address, "192.168.1.20")
+
+    def test_peer_resolution_prefers_ipv4_over_link_local_ipv6(self) -> None:
+        answers = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 8766, 0, 4)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.20", 8766)),
+        ]
+        with patch("peer_transport.socket.getaddrinfo", return_value=answers):
+            self.assertEqual(
+                resolve_peer_address("imac.local", 8766),
+                "192.168.1.20",
+            )
 
 
 class OutboundWorkerTests(unittest.TestCase):

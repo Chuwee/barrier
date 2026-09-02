@@ -55,7 +55,12 @@ from edge_core import (
     validate_directional_navigation,
     validate_keyboard_switch,
 )
-from peer_transport import OutboundWorker, PeerRecord, request_json
+from peer_transport import (
+    OutboundWorker,
+    PeerRecord,
+    request_json,
+    resolve_peer_address,
+)
 
 
 MOUSE_EVENT_TYPES = (
@@ -235,6 +240,14 @@ class EdgeRouter:
         self._display_cache = list_displays()
         peer_value = persisted.get("peer")
         self._peer = PeerRecord.from_json(peer_value) if isinstance(peer_value, dict) else None
+        if self._peer is not None and self._peer.resolved_address is None:
+            self._peer = replace(
+                self._peer,
+                resolved_address=resolve_peer_address(
+                    self._peer.address,
+                    self._peer.port,
+                ),
+            )
         self._connections: tuple[EdgeConnection, ...] = ()
         self._load_connections(persisted.get("connections", []))
         self._keyboard_switch: KeyboardSwitch | None = None
@@ -400,6 +413,10 @@ class EdgeRouter:
             address=address.strip(),
             port=int(response.get("port", port)),
             token=str(response["token"]),
+            resolved_address=resolve_peer_address(
+                address.strip(),
+                int(response.get("port", port)),
+            ),
             displays=remote.displays,
             connected=True,
             last_seen=time.time(),
@@ -468,6 +485,7 @@ class EdgeRouter:
             address=remote_address,
             port=int(payload.get("port", self._peer_port)),
             token=str(payload["token"]),
+            resolved_address=remote_address,
             displays=remote.displays,
             connected=True,
             last_seen=time.time(),
@@ -554,7 +572,7 @@ class EdgeRouter:
             try:
                 response = request_json(
                     "GET",
-                    peer.address,
+                    peer.connection_address,
                     peer.port,
                     "/peer/state",
                     token=peer.token,
