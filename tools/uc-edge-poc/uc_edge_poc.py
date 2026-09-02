@@ -78,6 +78,14 @@ class PendingArrival:
     observed_events: int = 0
 
 
+@dataclass
+class ArrivalPlacement:
+    display_key: str
+    destination_edge: str
+    point: Point
+    expires_at: float
+
+
 def _cg_point(point: Point) -> Any:
     return Quartz.CGPointMake(point.x, point.y)
 
@@ -174,6 +182,8 @@ class EdgeRouter:
                 self._redirect_ms = 1800
             if self._arrival_timeout_ms == 2200:
                 self._arrival_timeout_ms = 3200
+        if state_version < 4 and self._arrival_guard_ms == 650:
+            self._arrival_guard_ms = 1200
 
         self._display_cache = list_displays()
         peer_value = persisted.get("peer")
@@ -191,6 +201,7 @@ class EdgeRouter:
         self._last_restore_point: Point | None = None
         self._redirect: RedirectState | None = None
         self._pending_arrival: PendingArrival | None = None
+        self._arrival_placement: ArrivalPlacement | None = None
         self._cooldown_until = 0.0
         self._events: deque[dict[str, Any]] = deque(maxlen=120)
         self._callback_ref = self._handle_event
@@ -226,7 +237,7 @@ class EdgeRouter:
 
     def _save_locked(self) -> None:
         value = {
-            "version": 3,
+            "version": 4,
             "node_id": self._node_id,
             "node_name": self._node_name,
             "node_token": self._node_token,
@@ -370,6 +381,7 @@ class EdgeRouter:
             self._armed = False
             self._pending_arrival = None
             self._redirect = None
+            self._arrival_placement = None
             self._save_locked()
         self.stop_tap()
         self.log("peer", "peer disconnected; routing disarmed")
@@ -436,6 +448,7 @@ class EdgeRouter:
         with self._lock:
             self._connections = connections
             self._redirect = None
+            self._arrival_placement = None
             self._save_locked()
         self.log("config", f"saved {len(connections)} bidirectional edge mapping(s)")
         if sync:
@@ -453,6 +466,7 @@ class EdgeRouter:
             if not armed:
                 self._redirect = None
                 self._pending_arrival = None
+                self._arrival_placement = None
             self._save_locked()
         if armed:
             self.start_tap()
@@ -555,6 +569,7 @@ class EdgeRouter:
                 },
                 "redirecting": self._redirect is not None,
                 "pending_arrival": self._pending_arrival is not None,
+                "placing_arrival": self._arrival_placement is not None,
                 "events": list(self._events),
             }
 
@@ -698,6 +713,7 @@ class EdgeRouter:
             with self._lock:
                 self._error = f"event callback error: {exc}"
                 self._redirect = None
+                self._arrival_placement = None
             self.log("error", self._error)
             return event
 
@@ -714,6 +730,7 @@ class EdgeRouter:
             armed = self._armed
             redirect = self._redirect
             pending = self._pending_arrival
+            placement = self._arrival_placement
             connections = self._connections
             peer = self._peer
 
@@ -721,6 +738,23 @@ class EdgeRouter:
             return event
 
         displays = {display.key: display for display in self.displays(refresh=False)}
+        if placement is not None:
+            display = displays.get(placement.display_key)
+            if display is None:
+                with self._lock:
+                    if self._arrival_placement is placement:
+                        self._arrival_placement = None
+            else:
+                return self._apply_placement_event(
+                    event,
+                    placement,
+                    display,
+                    current,
+                    dx,
+                    dy,
+                    now,
+                )
+
         if pending is not None:
             if now > pending.expires_at:
                 with self._lock:
@@ -946,7 +980,16 @@ class EdgeRouter:
             self._redirect = None
             self._last_point = target
             self._cooldown_until = now + self._arrival_guard_ms / 1000.0
+            self._arrival_placement = ArrivalPlacement(
+                display_key=display.key,
+                destination_edge=destination.edge,
+                point=target,
+                expires_at=now + self._arrival_guard_ms / 1000.0,
+            )
+            placement = self._arrival_placement
             peer = self._peer
+        Quartz.CGWarpMouseCursorPosition(_cg_point(target))
+        self._schedule_placement_warps(placement)
         self._outbound.send(
             "/peer/handoff/complete",
             {
@@ -961,6 +1004,63 @@ class EdgeRouter:
             f"placed cursor on {display.name} {destination.edge} at "
             f"{destination.position(pending.normalized):.1f}%",
         )
+        return event
+
+    def _schedule_placement_warps(self, placement: ArrivalPlacement) -> None:
+        # Universal Control can overwrite the event-tap location after returning
+        # from the callback, so reinforce the logical destination while it settles.
+        for delay in (0.04, 0.12, 0.30, 0.65, 1.0):
+            timer = threading.Timer(delay, self._warp_active_placement, (placement,))
+            timer.daemon = True
+            timer.start()
+
+    def _warp_active_placement(self, placement: ArrivalPlacement) -> None:
+        with self._lock:
+            if self._arrival_placement is not placement or not self._armed:
+                return
+            point = placement.point
+            self._last_point = point
+        Quartz.CGWarpMouseCursorPosition(_cg_point(point))
+
+    def _apply_placement_event(
+        self,
+        event: Any,
+        placement: ArrivalPlacement,
+        display: Display,
+        current: Point,
+        dx: float,
+        dy: float,
+        now: float,
+    ) -> Any:
+        near_virtual_cursor = (
+            inside_display(display, current)
+            and abs(current.x - placement.point.x) <= 96.0
+            and abs(current.y - placement.point.y) <= 96.0
+        )
+        if near_virtual_cursor:
+            placement.point = current
+            if now >= placement.expires_at:
+                with self._lock:
+                    if self._arrival_placement is placement:
+                        self._arrival_placement = None
+            return event
+
+        magnitude = max(abs(dx), abs(dy), 1.0)
+        step_x, step_y = inward_delta(placement.destination_edge, magnitude)
+        inset = 2.0
+        target = Point(
+            min(display.right - inset, max(display.x + inset, placement.point.x + step_x)),
+            min(display.bottom - inset, max(display.y + inset, placement.point.y + step_y)),
+        )
+        Quartz.CGEventSetLocation(event, _cg_point(target))
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, int(step_x))
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, int(step_y))
+        Quartz.CGWarpMouseCursorPosition(_cg_point(target))
+        with self._lock:
+            placement.point = target
+            self._last_point = target
+            if now >= placement.expires_at and self._arrival_placement is placement:
+                self._arrival_placement = None
         return event
 
     def close(self) -> None:

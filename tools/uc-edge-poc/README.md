@@ -62,6 +62,10 @@ acknowledges the transfer to the source agent. If Apple does not complete the
 transfer, Edge Lab restores the pre-handoff cursor position instead of leaving
 the pointer exposed on the hidden transport edge.
 
+After a confirmed transfer, a short settling guard keeps any in-flight UC
+transport events on the logical destination. This prevents Apple's physical
+edge from immediately pulling the cursor back to the hidden transport edge.
+
 Ranges are directed. `0 -> 100%` preserves orientation while `100 -> 0%` flips
 it. Mapping `25 -> 75%` to `0 -> 100%` expands the middle half of one edge over
 the full destination edge. Existing occupied ranges remain visible; an invalid
