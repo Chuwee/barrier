@@ -87,9 +87,8 @@ ARROW_KEY_DIRECTIONS = {
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
 AGENT_SCHEMA_VERSION = 14
-PREARM_DISTANCE = 96.0
+PREARM_DISTANCE = 40.0
 PREARM_TIMEOUT_SECONDS = 1.2
-TRANSPORT_COMMIT_GRACE_SECONDS = 0.2
 
 
 @dataclass
@@ -105,7 +104,6 @@ class RedirectState:
     hotkey: bool = False
     ready: bool = False
     pulses_started: bool = False
-    transport_started_at: float = 0.0
 
 
 @dataclass
@@ -1463,7 +1461,6 @@ class EdgeRouter:
             ):
                 return
             redirect.pulses_started = True
-            redirect.transport_started_at = time.monotonic()
         delays = (0.001, 0.004, 0.01, 0.018, 0.03, 0.046, 0.066, 0.09, 0.12, 0.155)
         for delay in delays:
             timer = threading.Timer(delay, self._post_transport_event, (redirect,))
@@ -1694,13 +1691,7 @@ class EdgeRouter:
             if not redirect.ready:
                 return self._hold_redirect_event(event, redirect)
             outward = outward_component(redirect.source_edge, dx, dy)
-            if (
-                outward < -0.5
-                and not redirect.hotkey
-                and redirect.transport_started_at > 0
-                and now - redirect.transport_started_at
-                >= TRANSPORT_COMMIT_GRACE_SECONDS
-            ):
+            if outward < -0.5 and not redirect.hotkey:
                 Quartz.CGEventSetLocation(event, _cg_point(redirect.restore_point))
                 Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, 0)
                 Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, 0)
