@@ -62,7 +62,7 @@ acknowledges the transfer to the source agent. If Apple does not complete the
 transfer, Edge Lab restores the pre-handoff cursor position instead of leaving
 the pointer exposed on the hidden transport edge.
 
-After a confirmed transfer, a short settling guard keeps any in-flight UC
+After a confirmed transfer, a 220 ms settling guard keeps any in-flight UC
 transport events on the logical destination. This prevents Apple's physical
 edge from immediately pulling the cursor back to the hidden transport edge.
 The hidden edge also receives a bounded movement boost so Universal Control's

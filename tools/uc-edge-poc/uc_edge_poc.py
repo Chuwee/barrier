@@ -57,7 +57,7 @@ MOUSE_EVENT_TYPES = (
 )
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 7
+AGENT_SCHEMA_VERSION = 8
 
 
 @dataclass
@@ -198,6 +198,8 @@ class EdgeRouter:
                 self._arrival_timeout_ms = 3200
         if state_version < 4 and self._arrival_guard_ms == 650:
             self._arrival_guard_ms = 1200
+        if state_version < 6 and self._arrival_guard_ms == 1200:
+            self._arrival_guard_ms = 220
 
         self._display_cache = list_displays()
         peer_value = persisted.get("peer")
@@ -252,7 +254,7 @@ class EdgeRouter:
 
     def _save_locked(self) -> None:
         value = {
-            "version": 5,
+            "version": 6,
             "node_id": self._node_id,
             "node_name": self._node_name,
             "node_token": self._node_token,
@@ -1098,7 +1100,7 @@ class EdgeRouter:
     def _schedule_placement_warps(self, placement: ArrivalPlacement) -> None:
         # Universal Control can overwrite the event-tap location after returning
         # from the callback, so reinforce the logical destination while it settles.
-        for delay in (0.04, 0.12, 0.30, 0.65, 1.0):
+        for delay in (0.03, 0.08, 0.16):
             timer = threading.Timer(delay, self._warp_active_placement, (placement,))
             timer.daemon = True
             timer.start()
