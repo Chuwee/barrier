@@ -65,6 +65,8 @@ the pointer exposed on the hidden transport edge.
 After a confirmed transfer, a short settling guard keeps any in-flight UC
 transport events on the logical destination. This prevents Apple's physical
 edge from immediately pulling the cursor back to the hidden transport edge.
+The hidden edge also receives a bounded movement boost so Universal Control's
+push-through threshold is reached without requiring a long physical push.
 
 Ranges are directed. `0 -> 100%` preserves orientation while `100 -> 0%` flips
 it. Mapping `25 -> 75%` to `0 -> 100%` expands the middle half of one edge over

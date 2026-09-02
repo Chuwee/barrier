@@ -9,6 +9,7 @@ from edge_core import (
     HostSnapshot,
     Point,
     TransportEdge,
+    boosted_transport_magnitude,
     inward_delta,
     near_edge_segment,
     outward_component,
@@ -45,6 +46,12 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(target_delta("left", 5), (-5, 0))
         self.assertEqual(target_delta("bottom", 5), (0, 5))
         self.assertEqual(inward_delta("left", 5), (5, -0.0))
+
+    def test_transport_pressure_is_amplified_and_bounded(self) -> None:
+        self.assertEqual(boosted_transport_magnitude(1, 3, 8, 24), 8)
+        self.assertEqual(boosted_transport_magnitude(4, 3, 8, 24), 12)
+        self.assertEqual(boosted_transport_magnitude(20, 3, 8, 24), 24)
+        self.assertEqual(boosted_transport_magnitude(-4, 3, 8, 24), 12)
 
     def test_right_edge_crossing_in_interval_triggers(self) -> None:
         self.assertTrue(

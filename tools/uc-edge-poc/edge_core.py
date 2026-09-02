@@ -243,6 +243,16 @@ def target_delta(edge: str, magnitude: float) -> tuple[float, float]:
     raise ValueError(f"unknown edge: {edge}")
 
 
+def boosted_transport_magnitude(
+    magnitude: float,
+    gain: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    """Amplify transport pressure without allowing an unbounded cursor delta."""
+    return clamp(max(abs(magnitude) * gain, minimum), minimum, maximum)
+
+
 def inward_delta(edge: str, magnitude: float) -> tuple[float, float]:
     dx, dy = target_delta(edge, magnitude)
     return -dx, -dy

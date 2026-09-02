@@ -33,6 +33,7 @@ from edge_core import (
     HostSnapshot,
     Point,
     TransportEdge,
+    boosted_transport_magnitude,
     inside_display,
     inward_delta,
     near_edge_segment,
@@ -177,6 +178,9 @@ class EdgeRouter:
         self._cooldown_ms = int(persisted.get("cooldown_ms", 900))
         self._arrival_timeout_ms = int(persisted.get("arrival_timeout_ms", 3200))
         self._arrival_guard_ms = int(persisted.get("arrival_guard_ms", 650))
+        self._transport_gain = float(persisted.get("transport_gain", 3.0))
+        self._transport_min_delta = float(persisted.get("transport_min_delta", 8.0))
+        self._transport_max_delta = float(persisted.get("transport_max_delta", 24.0))
         if state_version < 3:
             if self._redirect_ms == 700:
                 self._redirect_ms = 1800
@@ -237,7 +241,7 @@ class EdgeRouter:
 
     def _save_locked(self) -> None:
         value = {
-            "version": 4,
+            "version": 5,
             "node_id": self._node_id,
             "node_name": self._node_name,
             "node_token": self._node_token,
@@ -250,6 +254,9 @@ class EdgeRouter:
             "cooldown_ms": self._cooldown_ms,
             "arrival_timeout_ms": self._arrival_timeout_ms,
             "arrival_guard_ms": self._arrival_guard_ms,
+            "transport_gain": self._transport_gain,
+            "transport_min_delta": self._transport_min_delta,
+            "transport_max_delta": self._transport_max_delta,
         }
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._state_path.with_suffix(".tmp")
@@ -566,6 +573,9 @@ class EdgeRouter:
                     "cooldown_ms": self._cooldown_ms,
                     "arrival_timeout_ms": self._arrival_timeout_ms,
                     "arrival_guard_ms": self._arrival_guard_ms,
+                    "transport_gain": self._transport_gain,
+                    "transport_min_delta": self._transport_min_delta,
+                    "transport_max_delta": self._transport_max_delta,
                 },
                 "redirecting": self._redirect is not None,
                 "pending_arrival": self._pending_arrival is not None,
@@ -947,6 +957,12 @@ class EdgeRouter:
         magnitude: float,
     ) -> Any:
         target = point_on_edge(display, transport.edge, transport.position(normalized))
+        magnitude = boosted_transport_magnitude(
+            magnitude,
+            self._transport_gain,
+            self._transport_min_delta,
+            self._transport_max_delta,
+        )
         target_dx, target_dy = target_delta(transport.edge, magnitude)
         Quartz.CGEventSetLocation(event, _cg_point(target))
         Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, int(target_dx))
