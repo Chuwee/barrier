@@ -25,6 +25,7 @@ from edge_core import (
     point_inside_display,
     point_on_edge,
     propose_directional_navigation,
+    should_prearm,
     should_trigger,
     target_delta,
     transform_handoff_delta,
@@ -83,6 +84,34 @@ class GeometryTests(unittest.TestCase):
                 Point(1298, 450),
                 Point(1301, 450),
                 3,
+                0,
+            )
+        )
+
+    def test_outward_motion_prearms_before_reaching_edge(self) -> None:
+        self.assertTrue(
+            should_prearm(
+                DISPLAY,
+                "right",
+                20,
+                80,
+                40,
+                Point(1240, 400),
+                Point(1270, 400),
+                30,
+                0,
+            )
+        )
+        self.assertFalse(
+            should_prearm(
+                DISPLAY,
+                "right",
+                20,
+                80,
+                40,
+                Point(1270, 400),
+                Point(1240, 400),
+                -30,
                 0,
             )
         )

@@ -597,6 +597,28 @@ def should_trigger(
     return min(start_percent, end_percent) <= fraction <= max(start_percent, end_percent)
 
 
+def should_prearm(
+    display: Display,
+    edge: str,
+    start_percent: float,
+    end_percent: float,
+    distance: float,
+    previous: Point | None,
+    current: Point,
+    dx: float,
+    dy: float,
+) -> bool:
+    if outward_component(edge, dx, dy) <= 0:
+        return False
+    depth = inward_edge_depth(display, edge, current)
+    if depth < 0 or depth > distance:
+        return False
+    if previous is not None and not inside_display(display, previous, distance):
+        return False
+    fraction = span_fraction(display, edge, current)
+    return min(start_percent, end_percent) <= fraction <= max(start_percent, end_percent)
+
+
 def point_on_edge(display: Display, edge: str, position_percent: float) -> Point:
     fraction = clamp(position_percent, 0.0, 100.0) / 100.0
     if edge == "left":
