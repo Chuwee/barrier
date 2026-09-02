@@ -47,7 +47,6 @@ from edge_core import (
     point_inside_edge,
     point_on_edge,
     propose_directional_navigation,
-    should_prearm,
     should_trigger,
     span_fraction,
     target_delta,
@@ -86,9 +85,7 @@ ARROW_KEY_DIRECTIONS = {
 }
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 14
-PREARM_DISTANCE = 40.0
-PREARM_TIMEOUT_SECONDS = 1.2
+AGENT_SCHEMA_VERSION = 13
 
 
 @dataclass
@@ -103,7 +100,6 @@ class RedirectState:
     event_count: int = 0
     hotkey: bool = False
     ready: bool = False
-    pulses_started: bool = False
 
 
 @dataclass
@@ -268,7 +264,6 @@ class EdgeRouter:
         self._last_point: Point | None = None
         self._last_restore_point: Point | None = None
         self._redirect: RedirectState | None = None
-        self._prearm_redirect: RedirectState | None = None
         self._pending_arrival: PendingArrival | None = None
         self._arrival_placement: ArrivalPlacement | None = None
         self._arrival_latch: ArrivalLatch | None = None
@@ -561,7 +556,6 @@ class EdgeRouter:
             self._armed = False
             self._pending_arrival = None
             self._redirect = None
-            self._prearm_redirect = None
             self._arrival_placement = None
             self._arrival_latch = None
             self._hotkey_pressed = None
@@ -634,7 +628,6 @@ class EdgeRouter:
                 },
                 "cursor": {"x": float(cursor.x), "y": float(cursor.y)},
                 "redirecting": self._redirect is not None,
-                "prearming": self._prearm_redirect is not None,
                 "pending_arrival": self._pending_arrival is not None,
                 "placing_arrival": self._arrival_placement is not None,
                 "arrival_latched": self._arrival_latch is not None,
@@ -786,7 +779,6 @@ class EdgeRouter:
             self._armed = armed
             if not armed:
                 self._redirect = None
-                self._prearm_redirect = None
                 self._pending_arrival = None
                 self._arrival_placement = None
                 self._arrival_latch = None
@@ -905,7 +897,6 @@ class EdgeRouter:
                     "transport_max_delta": self._transport_max_delta,
                 },
                 "redirecting": self._redirect is not None,
-                "prearming": self._prearm_redirect is not None,
                 "pending_arrival": self._pending_arrival is not None,
                 "placing_arrival": self._arrival_placement is not None,
                 "arrival_latched": self._arrival_latch is not None,
@@ -1340,11 +1331,7 @@ class EdgeRouter:
                 ),
                 None,
             )
-            if (
-                self._redirect is not None
-                or self._prearm_redirect is not None
-                or now < self._cooldown_until
-            ):
+            if self._redirect is not None or now < self._cooldown_until:
                 self.log("keyboard", "switch ignored while another handoff is settling")
                 return
         if peer is None or not peer.connected:
@@ -1424,58 +1411,27 @@ class EdgeRouter:
         error: RuntimeError | None,
     ) -> None:
         with self._lock:
-            active = self._redirect is redirect
-            prearming = self._prearm_redirect is redirect
-            if not active and not prearming:
+            if self._redirect is not redirect:
                 return
             if error is not None:
-                if active:
-                    self._redirect = None
-                    self._hotkey_pressed = None
-                    self._last_point = redirect.restore_point
-                    self._cooldown_until = (
-                        time.monotonic() + self._cooldown_ms / 1000.0
-                    )
-                else:
-                    self._prearm_redirect = None
+                self._redirect = None
+                self._hotkey_pressed = None
+                self._last_point = redirect.restore_point
+                self._cooldown_until = (
+                    time.monotonic() + self._cooldown_ms / 1000.0
+                )
             else:
                 redirect.ready = True
         if error is not None:
-            if active:
-                Quartz.CGWarpMouseCursorPosition(_cg_point(redirect.restore_point))
-                self.log("handoff", "destination did not arm; restored the cursor")
-            return
-        if prearming and not active:
-            self.log("handoff", "destination pre-armed before edge crossing")
+            Quartz.CGWarpMouseCursorPosition(_cg_point(redirect.restore_point))
+            self.log("handoff", "destination did not arm; restored the cursor")
             return
 
         self.log("handoff", "destination armed; starting UC transport")
-        self._start_transport_pulses(redirect)
-
-    def _start_transport_pulses(self, redirect: RedirectState) -> None:
-        with self._lock:
-            if (
-                self._redirect is not redirect
-                or not redirect.ready
-                or redirect.pulses_started
-            ):
-                return
-            redirect.pulses_started = True
-        delays = (0.001, 0.004, 0.01, 0.018, 0.03, 0.046, 0.066, 0.09, 0.12, 0.155)
-        for delay in delays:
+        for delay in (0.006, 0.018, 0.032, 0.048, 0.066, 0.086, 0.11, 0.138, 0.17):
             timer = threading.Timer(delay, self._post_transport_event, (redirect,))
             timer.daemon = True
             timer.start()
-
-    def _cancel_prearm(self, redirect: RedirectState) -> None:
-        with self._lock:
-            if self._prearm_redirect is not redirect:
-                return
-            self._prearm_redirect = None
-        self._outbound.send(
-            "/peer/handoff/cancel",
-            {"handoff_id": redirect.handoff_id},
-        )
 
     def _release_keyboard_latch(self) -> None:
         with self._lock:
@@ -1552,7 +1508,6 @@ class EdgeRouter:
             self._last_point = current
             armed = self._armed
             redirect = self._redirect
-            prearm_redirect = self._prearm_redirect
             pending = self._pending_arrival
             placement = self._arrival_placement
             arrival_latch = self._arrival_latch
@@ -1668,7 +1623,6 @@ class EdgeRouter:
                             "ignored input away from the UC transport edge "
                             f"at {current.x:.0f},{current.y:.0f} (source pid {source_pid})",
                         )
-                    return event
 
         if redirect is not None:
             if now > redirect.expires_at:
@@ -1723,95 +1677,6 @@ class EdgeRouter:
         if peer is None or not peer.connected:
             return event
 
-        if prearm_redirect is not None:
-            connection = next(
-                (
-                    item
-                    for item in connections
-                    if item.id == prearm_redirect.connection_id
-                ),
-                None,
-            )
-            route = connection.route_from(self._node_id) if connection else None
-            if route is not None:
-                source, _, transport = route
-                source_display = displays.get(source.display_key)
-                transport_display = displays.get(transport.display_key)
-            else:
-                source = None
-                source_display = None
-                transport_display = None
-            if (
-                source is not None
-                and source_display is not None
-                and transport_display is not None
-                and should_trigger(
-                    source_display,
-                    source.edge,
-                    source.start,
-                    source.end,
-                    self._threshold,
-                    previous,
-                    current,
-                    dx,
-                    dy,
-                )
-            ):
-                restore_point = (
-                    previous
-                    if previous
-                    and inside_display(source_display, previous, self._threshold * 2)
-                    else current
-                )
-                with self._lock:
-                    if self._prearm_redirect is prearm_redirect:
-                        self._prearm_redirect = None
-                        self._redirect = prearm_redirect
-                        prearm_redirect.restore_point = restore_point
-                        prearm_redirect.expires_at = (
-                            now + self._redirect_ms / 1000.0
-                        )
-                        prearm_redirect.event_count = 1
-                        self._last_restore_point = restore_point
-                        promoted = True
-                    else:
-                        promoted = False
-                if promoted:
-                    self.log(
-                        "handoff",
-                        f"{connection.name}: crossed with destination pre-armed",
-                    )
-                    if prearm_redirect.ready:
-                        self._start_transport_pulses(prearm_redirect)
-                        return self._apply_transport_event(
-                            event,
-                            transport,
-                            transport_display,
-                            prearm_redirect.normalized,
-                            max(outward_component(source.edge, dx, dy), 1.0),
-                        )
-                    return self._hold_redirect_event(event, prearm_redirect)
-            with self._lock:
-                prearm_still_active = self._prearm_redirect is prearm_redirect
-            still_approaching = (
-                prearm_still_active
-                and source is not None
-                and source_display is not None
-                and now <= prearm_redirect.expires_at
-                and near_edge_segment(
-                    source_display,
-                    source.edge,
-                    source.start,
-                    source.end,
-                    current,
-                    PREARM_DISTANCE,
-                )
-                and outward_component(source.edge, dx, dy) >= -2.0
-            )
-            if still_approaching:
-                return event
-            self._cancel_prearm(prearm_redirect)
-
         for connection in connections:
             if not connection.enabled:
                 continue
@@ -1831,7 +1696,7 @@ class EdgeRouter:
             transport_display = displays.get(transport.display_key)
             if source_display is None or transport_display is None:
                 continue
-            triggered = should_trigger(
+            if not should_trigger(
                 source_display,
                 source.edge,
                 source.start,
@@ -1841,53 +1706,7 @@ class EdgeRouter:
                 current,
                 dx,
                 dy,
-            )
-            if not triggered and should_prearm(
-                source_display,
-                source.edge,
-                source.start,
-                source.end,
-                PREARM_DISTANCE,
-                previous,
-                current,
-                dx,
-                dy,
             ):
-                edge_position = span_fraction(source_display, source.edge, current)
-                normalized = source.normalize(edge_position)
-                prearm_redirect = RedirectState(
-                    handoff_id=uuid.uuid4().hex,
-                    connection_id=connection.id,
-                    source_edge=source.edge,
-                    transport=transport,
-                    normalized=normalized,
-                    expires_at=now + PREARM_TIMEOUT_SECONDS,
-                    restore_point=current,
-                )
-                with self._lock:
-                    if self._prearm_redirect is not None:
-                        continue
-                    self._prearm_redirect = prearm_redirect
-                self._send_handoff_intent(
-                    prearm_redirect,
-                    "/peer/handoff",
-                    {
-                        "handoff_id": prearm_redirect.handoff_id,
-                        "connection_id": connection.id,
-                        "source_host": self._node_id,
-                        "target_host": destination.host_id,
-                        "normalized": normalized,
-                    },
-                )
-                timeout_timer = threading.Timer(
-                    PREARM_TIMEOUT_SECONDS,
-                    self._cancel_prearm,
-                    (prearm_redirect,),
-                )
-                timeout_timer.daemon = True
-                timeout_timer.start()
-                return event
-            if not triggered:
                 continue
 
             edge_position = span_fraction(source_display, source.edge, current)
