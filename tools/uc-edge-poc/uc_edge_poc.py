@@ -35,6 +35,7 @@ from edge_core import (
     TransportEdge,
     inside_display,
     inward_delta,
+    near_edge_segment,
     outward_component,
     point_inside_edge,
     point_on_edge,
@@ -58,6 +59,7 @@ DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
 
 @dataclass
 class RedirectState:
+    handoff_id: str
     connection_id: str
     source_edge: str
     transport: TransportEdge
@@ -67,11 +69,13 @@ class RedirectState:
     event_count: int = 0
 
 
-@dataclass(frozen=True)
+@dataclass
 class PendingArrival:
+    handoff_id: str
     connection_id: str
     normalized: float
     expires_at: float
+    observed_events: int = 0
 
 
 def _cg_point(point: Point) -> Any:
@@ -160,10 +164,16 @@ class EdgeRouter:
         self._pair_code = str(persisted.get("pair_code") or f"{secrets.randbelow(1_000_000):06d}")
         self._armed = bool(persisted.get("armed", False))
         self._threshold = float(persisted.get("threshold", 4.0))
-        self._redirect_ms = int(persisted.get("redirect_ms", 700))
+        state_version = int(persisted.get("version", 0))
+        self._redirect_ms = int(persisted.get("redirect_ms", 1800))
         self._cooldown_ms = int(persisted.get("cooldown_ms", 900))
-        self._arrival_timeout_ms = int(persisted.get("arrival_timeout_ms", 2200))
+        self._arrival_timeout_ms = int(persisted.get("arrival_timeout_ms", 3200))
         self._arrival_guard_ms = int(persisted.get("arrival_guard_ms", 650))
+        if state_version < 3:
+            if self._redirect_ms == 700:
+                self._redirect_ms = 1800
+            if self._arrival_timeout_ms == 2200:
+                self._arrival_timeout_ms = 3200
 
         self._display_cache = list_displays()
         peer_value = persisted.get("peer")
@@ -216,7 +226,7 @@ class EdgeRouter:
 
     def _save_locked(self) -> None:
         value = {
-            "version": 2,
+            "version": 3,
             "node_id": self._node_id,
             "node_name": self._node_name,
             "node_token": self._node_token,
@@ -549,6 +559,7 @@ class EdgeRouter:
             }
 
     def receive_handoff(self, payload: dict[str, Any]) -> None:
+        handoff_id = str(payload.get("handoff_id") or payload["connection_id"])
         connection_id = str(payload["connection_id"])
         source_host = str(payload["source_host"])
         target_host = str(payload["target_host"])
@@ -570,11 +581,37 @@ class EdgeRouter:
             if connection is None or connection.route_from(self._node_id) is None:
                 raise ValueError("handoff references an unavailable connection")
             self._pending_arrival = PendingArrival(
+                handoff_id=handoff_id,
                 connection_id=connection_id,
                 normalized=normalized,
                 expires_at=time.monotonic() + self._arrival_timeout_ms / 1000.0,
             )
-        self.log("handoff", f"arrival armed at {normalized * 100:.1f}%")
+        self.log(
+            "handoff",
+            f"handoff intent received at {normalized * 100:.1f}%; waiting for UC input",
+        )
+
+    def complete_handoff(self, payload: dict[str, Any]) -> None:
+        handoff_id = str(payload["handoff_id"])
+        source_host = str(payload["source_host"])
+        target_host = str(payload["target_host"])
+        peer = self.peer()
+        if source_host != self._node_id or peer is None or target_host != peer.id:
+            raise ValueError("handoff completion does not match the active pair")
+        with self._lock:
+            redirect = self._redirect
+            if redirect is None or redirect.handoff_id != handoff_id:
+                return
+            self._redirect = None
+            self._cooldown_until = time.monotonic() + self._cooldown_ms / 1000.0
+        self.log("handoff", "Universal Control transfer confirmed by peer")
+
+    def cancel_handoff(self, payload: dict[str, Any]) -> None:
+        handoff_id = str(payload["handoff_id"])
+        with self._lock:
+            pending = self._pending_arrival
+            if pending is not None and pending.handoff_id == handoff_id:
+                self._pending_arrival = None
 
     def _tap_thread(self) -> None:
         mask = 0
@@ -687,42 +724,96 @@ class EdgeRouter:
         if pending is not None:
             if now > pending.expires_at:
                 with self._lock:
-                    self._pending_arrival = None
-                self.log("handoff", "arrival window expired before UC delivered input")
+                    if self._pending_arrival is pending:
+                        self._pending_arrival = None
+                self.log("handoff", "handoff intent expired without UC input")
             else:
                 connection = next(
                     (item for item in connections if item.id == pending.connection_id),
                     None,
                 )
                 route = connection.route_from(self._node_id) if connection else None
-                if route is not None:
-                    destination, _, _ = route
+                if route is None:
+                    with self._lock:
+                        if self._pending_arrival is pending:
+                            self._pending_arrival = None
+                    self.log("handoff", "discarded intent for an unavailable mapping")
+                else:
+                    destination, _, transport = route
                     display = displays.get(destination.display_key)
-                    if display is not None:
+                    transport_display = displays.get(transport.display_key)
+                    if (
+                        display is not None
+                        and transport_display is not None
+                        and near_edge_segment(
+                            transport_display,
+                            transport.edge,
+                            transport.start,
+                            transport.end,
+                            current,
+                            max(24.0, self._threshold * 6.0),
+                        )
+                    ):
                         return self._apply_arrival(
                             event,
                             destination,
                             display,
-                            pending.normalized,
+                            pending,
                             dx,
                             dy,
                             now,
                         )
+                    with self._lock:
+                        if self._pending_arrival is pending:
+                            pending.observed_events += 1
+                            first_observation = pending.observed_events == 1
+                        else:
+                            first_observation = False
+                    if first_observation:
+                        source_pid = int(
+                            Quartz.CGEventGetIntegerValueField(
+                                event,
+                                Quartz.kCGEventSourceUnixProcessID,
+                            )
+                        )
+                        self.log(
+                            "handoff",
+                            "ignored input away from the UC transport edge "
+                            f"at {current.x:.0f},{current.y:.0f} (source pid {source_pid})",
+                        )
+                    return event
 
         if redirect is not None:
             if now > redirect.expires_at:
-                with self._lock:
-                    self._redirect = None
-                    self._cooldown_until = now + self._cooldown_ms / 1000.0
-                self.log("redirect", "UC transport window expired")
-                return event
-            outward = outward_component(redirect.source_edge, dx, dy)
-            if outward < -0.5:
                 Quartz.CGEventSetLocation(event, _cg_point(redirect.restore_point))
+                Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, 0)
+                Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, 0)
                 with self._lock:
                     self._redirect = None
                     self._last_point = redirect.restore_point
                     self._cooldown_until = now + self._cooldown_ms / 1000.0
+                self._outbound.send(
+                    "/peer/handoff/cancel",
+                    {"handoff_id": redirect.handoff_id},
+                )
+                self.log(
+                    "redirect",
+                    "UC transfer was not confirmed; restored the original cursor position",
+                )
+                return event
+            outward = outward_component(redirect.source_edge, dx, dy)
+            if outward < -0.5:
+                Quartz.CGEventSetLocation(event, _cg_point(redirect.restore_point))
+                Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, 0)
+                Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, 0)
+                with self._lock:
+                    self._redirect = None
+                    self._last_point = redirect.restore_point
+                    self._cooldown_until = now + self._cooldown_ms / 1000.0
+                self._outbound.send(
+                    "/peer/handoff/cancel",
+                    {"handoff_id": redirect.handoff_id},
+                )
                 self.log("redirect", "cancelled and restored after inward movement")
                 return event
             transport_display = displays.get(redirect.transport.display_key)
@@ -777,6 +868,7 @@ class EdgeRouter:
                 else current
             )
             redirect = RedirectState(
+                handoff_id=uuid.uuid4().hex,
                 connection_id=connection.id,
                 source_edge=source.edge,
                 transport=transport,
@@ -791,6 +883,7 @@ class EdgeRouter:
             self._outbound.send(
                 "/peer/handoff",
                 {
+                    "handoff_id": redirect.handoff_id,
                     "connection_id": connection.id,
                     "source_host": self._node_id,
                     "target_host": destination.host_id,
@@ -833,12 +926,16 @@ class EdgeRouter:
         event: Any,
         destination: EdgeEndpoint,
         display: Display,
-        normalized: float,
+        pending: PendingArrival,
         dx: float,
         dy: float,
         now: float,
     ) -> Any:
-        target = point_inside_edge(display, destination.edge, destination.position(normalized))
+        target = point_inside_edge(
+            display,
+            destination.edge,
+            destination.position(pending.normalized),
+        )
         magnitude = max(abs(dx), abs(dy), 1.0)
         target_dx, target_dy = inward_delta(destination.edge, magnitude)
         Quartz.CGEventSetLocation(event, _cg_point(target))
@@ -849,10 +946,20 @@ class EdgeRouter:
             self._redirect = None
             self._last_point = target
             self._cooldown_until = now + self._arrival_guard_ms / 1000.0
+            peer = self._peer
+        self._outbound.send(
+            "/peer/handoff/complete",
+            {
+                "handoff_id": pending.handoff_id,
+                "connection_id": pending.connection_id,
+                "source_host": peer.id if peer else "",
+                "target_host": self._node_id,
+            },
+        )
         self.log(
             "arrival",
             f"placed cursor on {display.name} {destination.edge} at "
-            f"{destination.position(normalized):.1f}%",
+            f"{destination.position(pending.normalized):.1f}%",
         )
         return event
 
@@ -995,6 +1102,10 @@ class PeerHandler(JsonHandler):
                 self.server.router.set_armed(bool(payload.get("armed")), sync=False)
             elif self.path == "/peer/handoff":
                 self.server.router.receive_handoff(payload)
+            elif self.path == "/peer/handoff/complete":
+                self.server.router.complete_handoff(payload)
+            elif self.path == "/peer/handoff/cancel":
+                self.server.router.cancel_handoff(payload)
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return

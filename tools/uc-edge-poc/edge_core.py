@@ -273,6 +273,26 @@ def near_edge(display: Display, edge: str, point: Point, threshold: float) -> bo
     raise ValueError(f"unknown edge: {edge}")
 
 
+def near_edge_segment(
+    display: Display,
+    edge: str,
+    start_percent: float,
+    end_percent: float,
+    point: Point,
+    threshold: float,
+) -> bool:
+    """Return whether a point is close to a bounded section of a display edge."""
+    if not inside_display(display, point, threshold):
+        return False
+    if not near_edge(display, edge, point, threshold):
+        return False
+    span = display.height if edge in ("left", "right") else display.width
+    tolerance = 100.0 * threshold / max(span, 1.0)
+    position = span_fraction(display, edge, point)
+    low, high = sorted((start_percent, end_percent))
+    return low - tolerance <= position <= high + tolerance
+
+
 def should_trigger(
     display: Display,
     edge: str,

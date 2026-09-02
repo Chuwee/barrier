@@ -56,6 +56,12 @@ restarting the process after granting permissions.
    event to the hidden UC edge, and the receiving agent places the cursor at the
    proportionally mapped destination point.
 
+The receiving agent confirms that Universal Control delivered input at its real
+transport edge before moving the pointer to the logical destination. It then
+acknowledges the transfer to the source agent. If Apple does not complete the
+transfer, Edge Lab restores the pre-handoff cursor position instead of leaving
+the pointer exposed on the hidden transport edge.
+
 Ranges are directed. `0 -> 100%` preserves orientation while `100 -> 0%` flips
 it. Mapping `25 -> 75%` to `0 -> 100%` expands the middle half of one edge over
 the full destination edge. Existing occupied ranges remain visible; an invalid

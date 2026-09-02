@@ -10,6 +10,7 @@ from edge_core import (
     Point,
     TransportEdge,
     inward_delta,
+    near_edge_segment,
     outward_component,
     point_inside_edge,
     point_on_edge,
@@ -97,6 +98,14 @@ class GeometryTests(unittest.TestCase):
     def test_destination_point_is_inside_display(self) -> None:
         self.assertEqual(point_inside_edge(DISPLAY, "left", 50, 8), Point(108, 450))
         self.assertEqual(point_inside_edge(DISPLAY, "bottom", 25, 8), Point(400, 842))
+
+    def test_point_must_be_near_transport_edge_and_inside_its_range(self) -> None:
+        self.assertTrue(near_edge_segment(DISPLAY, "top", 20, 80, Point(700, 54), 8))
+        self.assertFalse(near_edge_segment(DISPLAY, "top", 20, 80, Point(700, 90), 8))
+        self.assertFalse(near_edge_segment(DISPLAY, "top", 20, 80, Point(110, 54), 8))
+
+    def test_transport_range_confirmation_supports_reversed_ranges(self) -> None:
+        self.assertTrue(near_edge_segment(DISPLAY, "right", 80, 20, Point(1297, 450), 8))
 
 
 class TopologyTests(unittest.TestCase):
