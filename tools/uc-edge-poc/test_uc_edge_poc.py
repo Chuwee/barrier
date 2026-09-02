@@ -11,6 +11,7 @@ from edge_core import (
     TransportEdge,
     boosted_transport_magnitude,
     inward_delta,
+    inward_edge_depth,
     near_edge_segment,
     outward_component,
     point_inside_edge,
@@ -52,6 +53,12 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(boosted_transport_magnitude(4, 3, 8, 24), 12)
         self.assertEqual(boosted_transport_magnitude(20, 3, 8, 24), 24)
         self.assertEqual(boosted_transport_magnitude(-4, 3, 8, 24), 12)
+
+    def test_inward_edge_depth_supports_arrival_hysteresis(self) -> None:
+        self.assertEqual(inward_edge_depth(DISPLAY, "left", Point(132, 400)), 32)
+        self.assertEqual(inward_edge_depth(DISPLAY, "right", Point(1268, 400)), 32)
+        self.assertEqual(inward_edge_depth(DISPLAY, "top", Point(400, 82)), 32)
+        self.assertEqual(inward_edge_depth(DISPLAY, "bottom", Point(400, 818)), 32)
 
     def test_right_edge_crossing_in_interval_triggers(self) -> None:
         self.assertTrue(

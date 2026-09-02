@@ -35,6 +35,7 @@ from edge_core import (
     TransportEdge,
     boosted_transport_magnitude,
     inside_display,
+    inward_edge_depth,
     inward_delta,
     near_edge_segment,
     outward_component,
@@ -56,7 +57,7 @@ MOUSE_EVENT_TYPES = (
 )
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 6
+AGENT_SCHEMA_VERSION = 7
 
 
 @dataclass
@@ -88,6 +89,12 @@ class ArrivalPlacement:
     expires_at: float
     rewritten_events: int = 0
     forced_warps: int = 0
+
+
+@dataclass(frozen=True)
+class ArrivalLatch:
+    display_key: str
+    edge: str
 
 
 def _cg_point(point: Point) -> Any:
@@ -209,6 +216,7 @@ class EdgeRouter:
         self._redirect: RedirectState | None = None
         self._pending_arrival: PendingArrival | None = None
         self._arrival_placement: ArrivalPlacement | None = None
+        self._arrival_latch: ArrivalLatch | None = None
         self._cooldown_until = 0.0
         self._events: deque[dict[str, Any]] = deque(maxlen=120)
         self._callback_ref = self._handle_event
@@ -392,6 +400,7 @@ class EdgeRouter:
             self._pending_arrival = None
             self._redirect = None
             self._arrival_placement = None
+            self._arrival_latch = None
             self._save_locked()
         self.stop_tap()
         self.log("peer", "peer disconnected; routing disarmed")
@@ -463,6 +472,7 @@ class EdgeRouter:
                 "redirecting": self._redirect is not None,
                 "pending_arrival": self._pending_arrival is not None,
                 "placing_arrival": self._arrival_placement is not None,
+                "arrival_latched": self._arrival_latch is not None,
                 "events": list(self._events)[:40],
             }
 
@@ -476,6 +486,7 @@ class EdgeRouter:
             self._connections = connections
             self._redirect = None
             self._arrival_placement = None
+            self._arrival_latch = None
             self._save_locked()
         self.log("config", f"saved {len(connections)} bidirectional edge mapping(s)")
         if sync:
@@ -494,6 +505,7 @@ class EdgeRouter:
                 self._redirect = None
                 self._pending_arrival = None
                 self._arrival_placement = None
+                self._arrival_latch = None
             self._save_locked()
         if armed:
             self.start_tap()
@@ -601,6 +613,7 @@ class EdgeRouter:
                 "redirecting": self._redirect is not None,
                 "pending_arrival": self._pending_arrival is not None,
                 "placing_arrival": self._arrival_placement is not None,
+                "arrival_latched": self._arrival_latch is not None,
                 "events": list(self._events),
             }
 
@@ -745,6 +758,7 @@ class EdgeRouter:
                 self._error = f"event callback error: {exc}"
                 self._redirect = None
                 self._arrival_placement = None
+                self._arrival_latch = None
             self.log("error", self._error)
             return event
 
@@ -762,6 +776,7 @@ class EdgeRouter:
             redirect = self._redirect
             pending = self._pending_arrival
             placement = self._arrival_placement
+            arrival_latch = self._arrival_latch
             connections = self._connections
             peer = self._peer
 
@@ -769,6 +784,24 @@ class EdgeRouter:
             return event
 
         displays = {display.key: display for display in self.displays(refresh=False)}
+        if arrival_latch is not None:
+            latched_display = displays.get(arrival_latch.display_key)
+            if latched_display is None:
+                with self._lock:
+                    if self._arrival_latch is arrival_latch:
+                        self._arrival_latch = None
+                arrival_latch = None
+            elif (
+                inside_display(latched_display, current)
+                and inward_edge_depth(latched_display, arrival_latch.edge, current)
+                >= max(32.0, self._threshold * 8.0)
+            ):
+                with self._lock:
+                    if self._arrival_latch is arrival_latch:
+                        self._arrival_latch = None
+                self.log("arrival", "destination edge released after inward movement")
+                arrival_latch = None
+
         if placement is not None:
             display = displays.get(placement.display_key)
             if display is None:
@@ -846,7 +879,6 @@ class EdgeRouter:
                             "ignored input away from the UC transport edge "
                             f"at {current.x:.0f},{current.y:.0f} (source pid {source_pid})",
                         )
-                    return event
 
         if redirect is not None:
             if now > redirect.expires_at:
@@ -906,6 +938,12 @@ class EdgeRouter:
             if route is None:
                 continue
             source, destination, transport = route
+            if (
+                arrival_latch is not None
+                and source.display_key == arrival_latch.display_key
+                and source.edge == arrival_latch.edge
+            ):
+                continue
             if destination.host_id != peer.id:
                 continue
             source_display = displays.get(source.display_key)
@@ -944,6 +982,7 @@ class EdgeRouter:
             )
             with self._lock:
                 self._redirect = redirect
+                self._pending_arrival = None
                 self._last_restore_point = restore_point
             self._outbound.send(
                 "/peer/handoff",
@@ -1029,6 +1068,10 @@ class EdgeRouter:
                 destination_edge=destination.edge,
                 point=target,
                 expires_at=now + self._arrival_guard_ms / 1000.0,
+            )
+            self._arrival_latch = ArrivalLatch(
+                display_key=display.key,
+                edge=destination.edge,
             )
             placement = self._arrival_placement
             peer = self._peer

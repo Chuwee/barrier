@@ -283,6 +283,18 @@ def near_edge(display: Display, edge: str, point: Point, threshold: float) -> bo
     raise ValueError(f"unknown edge: {edge}")
 
 
+def inward_edge_depth(display: Display, edge: str, point: Point) -> float:
+    if edge == "left":
+        return point.x - display.x
+    if edge == "right":
+        return display.right - point.x
+    if edge == "top":
+        return point.y - display.y
+    if edge == "bottom":
+        return display.bottom - point.y
+    raise ValueError(f"unknown edge: {edge}")
+
+
 def near_edge_segment(
     display: Display,
     edge: str,
