@@ -74,6 +74,7 @@ function initializeFormOptions(force = false) {
     const fallback = id.startsWith("b") ? "left" : "right";
     setOptions($(id), EDGES.map((edge) => ({value: edge, label: edge})), "", fallback);
   }
+  if (!editId && state.connections.length) applyKnownTransportDefaults();
   $("a-host-label").textContent = state.local.name;
   $("a-transport-label").textContent = `${state.local.name} transport`;
   $("b-host-label").textContent = peerHost?.name || "Remote Mac";
@@ -613,6 +614,22 @@ function orientedConnection(connection) {
   };
 }
 
+function applyKnownTransportDefaults() {
+  const raw = state?.connections.find((connection) => connection.enabled) || state?.connections[0];
+  if (!raw) {
+    for (const prefix of ["at", "bt"]) { field(`${prefix}-start`, 25); field(`${prefix}-end`, 75); }
+    field("at-edge", "right"); field("bt-edge", "left");
+    return;
+  }
+  const connection = orientedConnection(raw);
+  for (const [prefix, endpoint] of [["at", connection.a_transport], ["bt", connection.b_transport]]) {
+    field(`${prefix}-display`, endpoint.display_key);
+    field(`${prefix}-edge`, endpoint.edge);
+    field(`${prefix}-start`, endpoint.start);
+    field(`${prefix}-end`, endpoint.end);
+  }
+}
+
 function describeEndpoint(endpoint) {
   const host = endpoint.host_id === state.local.id ? state.local : state.peer;
   const display = host?.displays.find((item) => item.key === endpoint.display_key);
@@ -681,8 +698,7 @@ function clearEditor() {
   field("mapping-name", "Primary handoff");
   for (const prefix of ["a", "b"]) { field(`${prefix}-start`, 0); field(`${prefix}-end`, 100); }
   field("a-edge", "right"); field("b-edge", "left");
-  for (const prefix of ["at", "bt"]) { field(`${prefix}-start`, 25); field(`${prefix}-end`, 75); }
-  field("at-edge", "right"); field("bt-edge", "left");
+  applyKnownTransportDefaults();
   message("editor-message", "");
   renderTopology();
 }
