@@ -4,6 +4,8 @@ from dataclasses import replace
 
 from edge_core import (
     Display,
+    DirectionalBinding,
+    DirectionalNavigation,
     EdgeConnection,
     EdgeEndpoint,
     HotkeyDestination,
@@ -19,10 +21,12 @@ from edge_core import (
     point_inside_edge,
     point_inside_display,
     point_on_edge,
+    propose_directional_navigation,
     should_trigger,
     target_delta,
     transform_handoff_delta,
     validate_connections,
+    validate_directional_navigation,
     validate_keyboard_switch,
 )
 from peer_transport import PeerRecord
@@ -284,6 +288,102 @@ class TopologyTests(unittest.TestCase):
             [self.host_a, self.host_b],
         )
         self.assertTrue(shortcut.enabled)
+
+    def test_directional_proposal_uses_explicit_edge_in_both_directions(self) -> None:
+        navigation = propose_directional_navigation(
+            [self.host_a, self.host_b],
+            [self.connection()],
+        )
+        forward = navigation.binding_for("mac-a", "display-a", "right", 50)
+        reverse = navigation.binding_for("mac-b", "display-b", "left", 50)
+        self.assertEqual(forward.target.host_id if forward else None, "mac-b")
+        self.assertEqual(reverse.target.host_id if reverse else None, "mac-a")
+        self.assertEqual(forward.connection_id if forward else None, "one")
+
+    def test_directional_proposal_chains_same_mac_displays(self) -> None:
+        left = replace(DISPLAY, key="left", x=-1200, width=1200, main=False)
+        center = replace(DISPLAY, key="center", x=0, width=1200)
+        right = replace(DISPLAY, key="right", x=1200, width=1200, main=False)
+        host = HostSnapshot("mac-a", "MacBook", (left, center, right))
+        navigation = propose_directional_navigation([host], [])
+        from_left = navigation.binding_for("mac-a", "left", "right", 50)
+        from_center = navigation.binding_for("mac-a", "center", "right", 50)
+        self.assertEqual(from_left.target.display_key if from_left else None, "center")
+        self.assertEqual(from_center.target.display_key if from_center else None, "right")
+        self.assertIsNone(from_left.connection_id if from_left else "missing")
+
+    def test_explicit_direction_wins_over_same_mac_geometry(self) -> None:
+        local_right = replace(DISPLAY, key="local-right", x=1300, main=False)
+        host_a = replace(self.host_a, displays=(DISPLAY, local_right))
+        navigation = propose_directional_navigation(
+            [host_a, self.host_b],
+            [self.connection()],
+        )
+        binding = navigation.binding_for("mac-a", "display-a", "right", 50)
+        self.assertEqual(binding.target.host_id if binding else None, "mac-b")
+
+    def test_cross_mac_directional_binding_requires_uc_route(self) -> None:
+        navigation = DirectionalNavigation(
+            modifiers=("command",),
+            bindings=(
+                DirectionalBinding(
+                    id="missing-route",
+                    source_host_id="mac-a",
+                    source_display_key="display-a",
+                    direction="right",
+                    target=HotkeyDestination("mac-b", "display-b"),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "matching UC route"):
+            validate_directional_navigation(
+                navigation,
+                [self.connection()],
+                [self.host_a, self.host_b],
+            )
+
+    def test_directional_navigation_round_trip_preserves_fractional_context(self) -> None:
+        navigation = DirectionalNavigation(
+            modifiers=("option", "command"),
+            bindings=(
+                DirectionalBinding(
+                    id="fractional",
+                    source_host_id="mac-a",
+                    source_display_key="display-a",
+                    direction="right",
+                    source_start=25,
+                    source_end=75,
+                    target=HotkeyDestination("mac-b", "display-b", 10, 65),
+                    connection_id="one",
+                ),
+            ),
+        )
+        restored = DirectionalNavigation.from_json(navigation.to_json())
+        self.assertEqual(restored, navigation)
+        self.assertIsNone(restored.binding_for("mac-a", "display-a", "right", 10))
+        self.assertEqual(
+            restored.binding_for("mac-a", "display-a", "right", 50),
+            navigation.bindings[0],
+        )
+
+    def test_directional_navigation_rejects_overlapping_context_bands(self) -> None:
+        first = DirectionalBinding(
+            id="first",
+            source_host_id="mac-a",
+            source_display_key="display-a",
+            direction="right",
+            source_start=0,
+            source_end=60,
+            target=HotkeyDestination("mac-b", "display-b"),
+            connection_id="one",
+        )
+        second = replace(first, id="second", source_start=50, source_end=100)
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            validate_directional_navigation(
+                DirectionalNavigation(("command",), (first, second)),
+                [self.connection()],
+                [self.host_a, self.host_b],
+            )
 
 
 class PeerRecordTests(unittest.TestCase):

@@ -310,6 +310,130 @@ class KeyboardSwitch:
         return None
 
 
+@dataclass(frozen=True)
+class DirectionalBinding:
+    id: str
+    source_host_id: str
+    source_display_key: str
+    direction: str
+    target: HotkeyDestination
+    connection_id: str | None = None
+    source_start: float = 0.0
+    source_end: float = 100.0
+    enabled: bool = True
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "source_host_id": self.source_host_id,
+            "source_display_key": self.source_display_key,
+            "direction": self.direction,
+            "target": self.target.to_json(),
+            "connection_id": self.connection_id,
+            "source_start": self.source_start,
+            "source_end": self.source_end,
+            "enabled": self.enabled,
+        }
+
+    @classmethod
+    def from_json(cls, value: dict[str, Any]) -> DirectionalBinding:
+        connection_id = value.get("connection_id")
+        binding = cls(
+            id=str(value["id"]),
+            source_host_id=str(value["source_host_id"]),
+            source_display_key=str(value["source_display_key"]),
+            direction=str(value["direction"]),
+            target=HotkeyDestination.from_json(value["target"]),
+            connection_id=(str(connection_id) if connection_id else None),
+            source_start=float(value.get("source_start", 0.0)),
+            source_end=float(value.get("source_end", 100.0)),
+            enabled=bool(value.get("enabled", True)),
+        )
+        binding.validate("directional binding")
+        return binding
+
+    def validate(self, label: str) -> None:
+        if not self.id:
+            raise ValueError(f"{label} id is required")
+        if not self.source_host_id or not self.source_display_key:
+            raise ValueError(f"{label} must reference a source display")
+        if self.direction not in EDGES:
+            raise ValueError(f"{label} has an invalid direction")
+        if not 0 <= self.source_start <= 100 or not 0 <= self.source_end <= 100:
+            raise ValueError(f"{label} source range must stay between 0 and 100")
+        if self.source_start == self.source_end:
+            raise ValueError(f"{label} source range cannot have zero length")
+        self.target.validate(f"{label} target")
+
+    def contains(self, position: float) -> bool:
+        return min(self.source_start, self.source_end) <= position <= max(
+            self.source_start,
+            self.source_end,
+        )
+
+
+@dataclass(frozen=True)
+class DirectionalNavigation:
+    modifiers: tuple[str, ...]
+    bindings: tuple[DirectionalBinding, ...]
+    enabled: bool = True
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "modifiers": list(self.modifiers),
+            "bindings": [binding.to_json() for binding in self.bindings],
+            "enabled": self.enabled,
+        }
+
+    @classmethod
+    def from_json(cls, value: dict[str, Any]) -> DirectionalNavigation:
+        raw_modifiers = {str(item).lower() for item in value.get("modifiers", [])}
+        if any(modifier not in HOTKEY_MODIFIERS for modifier in raw_modifiers):
+            raise ValueError("directional navigation contains an invalid modifier")
+        navigation = cls(
+            modifiers=tuple(
+                modifier
+                for modifier in HOTKEY_MODIFIERS
+                if modifier in raw_modifiers
+            ),
+            bindings=tuple(
+                DirectionalBinding.from_json(item)
+                for item in value.get("bindings", [])
+            ),
+            enabled=bool(value.get("enabled", True)),
+        )
+        navigation.validate()
+        return navigation
+
+    def validate(self) -> None:
+        if not self.modifiers:
+            raise ValueError("directional navigation requires at least one modifier")
+        if any(modifier not in HOTKEY_MODIFIERS for modifier in self.modifiers):
+            raise ValueError("directional navigation contains an invalid modifier")
+        for binding in self.bindings:
+            binding.validate("directional binding")
+
+    def binding_for(
+        self,
+        host_id: str,
+        display_key: str,
+        direction: str,
+        position: float,
+    ) -> DirectionalBinding | None:
+        return next(
+            (
+                binding
+                for binding in self.bindings
+                if binding.enabled
+                and binding.source_host_id == host_id
+                and binding.source_display_key == display_key
+                and binding.direction == direction
+                and binding.contains(position)
+            ),
+            None,
+        )
+
+
 def clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
@@ -593,3 +717,171 @@ def validate_keyboard_switch(
         if destination.display_key not in displays:
             raise ValueError("shortcut destination references a disconnected display")
     return shortcut
+
+
+def _landing_for_endpoint(endpoint: EdgeEndpoint) -> tuple[float, float]:
+    position = endpoint.position(0.5)
+    if endpoint.edge == "left":
+        return 0.0, position
+    if endpoint.edge == "right":
+        return 100.0, position
+    if endpoint.edge == "top":
+        return position, 0.0
+    return position, 100.0
+
+
+def _landing_for_direction(direction: str) -> tuple[float, float]:
+    if direction == "left":
+        return 100.0, 50.0
+    if direction == "right":
+        return 0.0, 50.0
+    if direction == "top":
+        return 50.0, 100.0
+    return 50.0, 0.0
+
+
+def _geometric_neighbor(
+    source: Display,
+    direction: str,
+    displays: Iterable[Display],
+) -> Display | None:
+    candidates: list[tuple[float, float, Display]] = []
+    source_center_x = source.x + source.width / 2.0
+    source_center_y = source.y + source.height / 2.0
+    for target in displays:
+        if target.key == source.key:
+            continue
+        target_center_x = target.x + target.width / 2.0
+        target_center_y = target.y + target.height / 2.0
+        overlap_x = min(source.right, target.right) - max(source.x, target.x)
+        overlap_y = min(source.bottom, target.bottom) - max(source.y, target.y)
+        if direction == "left" and target.right <= source.x + 1.0 and overlap_y > 0:
+            candidates.append(
+                (source.x - target.right, abs(target_center_y - source_center_y), target)
+            )
+        elif direction == "right" and target.x >= source.right - 1.0 and overlap_y > 0:
+            candidates.append(
+                (target.x - source.right, abs(target_center_y - source_center_y), target)
+            )
+        elif direction == "top" and target.bottom <= source.y + 1.0 and overlap_x > 0:
+            candidates.append(
+                (source.y - target.bottom, abs(target_center_x - source_center_x), target)
+            )
+        elif direction == "bottom" and target.y >= source.bottom - 1.0 and overlap_x > 0:
+            candidates.append(
+                (target.y - source.bottom, abs(target_center_x - source_center_x), target)
+            )
+    return min(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
+
+
+def propose_directional_navigation(
+    hosts: Iterable[HostSnapshot],
+    connections: Iterable[EdgeConnection],
+    modifiers: tuple[str, ...] = ("command",),
+) -> DirectionalNavigation:
+    host_values = tuple(hosts)
+    connection_values = tuple(connections)
+    bindings: list[DirectionalBinding] = []
+    claimed: set[tuple[str, str, str]] = set()
+
+    for connection in connection_values:
+        for source, target in ((connection.a, connection.b), (connection.b, connection.a)):
+            x_percent, y_percent = _landing_for_endpoint(target)
+            bindings.append(
+                DirectionalBinding(
+                    id=f"edge:{connection.id}:{source.host_id}",
+                    source_host_id=source.host_id,
+                    source_display_key=source.display_key,
+                    direction=source.edge,
+                    source_start=source.start,
+                    source_end=source.end,
+                    target=HotkeyDestination(
+                        host_id=target.host_id,
+                        display_key=target.display_key,
+                        x_percent=x_percent,
+                        y_percent=y_percent,
+                    ),
+                    connection_id=connection.id,
+                )
+            )
+            claimed.add((source.host_id, source.display_key, source.edge))
+
+    for host in host_values:
+        for source in host.displays:
+            for direction in EDGES:
+                key = (host.id, source.key, direction)
+                if key in claimed:
+                    continue
+                target = _geometric_neighbor(source, direction, host.displays)
+                if target is None:
+                    continue
+                x_percent, y_percent = _landing_for_direction(direction)
+                bindings.append(
+                    DirectionalBinding(
+                        id=f"local:{host.id}:{source.key}:{direction}",
+                        source_host_id=host.id,
+                        source_display_key=source.key,
+                        direction=direction,
+                        target=HotkeyDestination(
+                            host_id=host.id,
+                            display_key=target.key,
+                            x_percent=x_percent,
+                            y_percent=y_percent,
+                        ),
+                    )
+                )
+
+    navigation = DirectionalNavigation(
+        modifiers=modifiers,
+        bindings=tuple(bindings),
+    )
+    return validate_directional_navigation(
+        navigation,
+        connection_values,
+        host_values,
+    )
+
+
+def validate_directional_navigation(
+    navigation: DirectionalNavigation,
+    connections: Iterable[EdgeConnection],
+    hosts: Iterable[HostSnapshot],
+) -> DirectionalNavigation:
+    navigation.validate()
+    host_displays = {
+        host.id: {display.key for display in host.displays}
+        for host in hosts
+    }
+    connection_values = {connection.id: connection for connection in connections}
+    seen_ids: set[str] = set()
+    occupied: dict[tuple[str, str, str], list[tuple[float, float]]] = {}
+    for binding in navigation.bindings:
+        if binding.id in seen_ids:
+            raise ValueError(f"duplicate directional binding id: {binding.id}")
+        seen_ids.add(binding.id)
+        source_displays = host_displays.get(binding.source_host_id)
+        target_displays = host_displays.get(binding.target.host_id)
+        if source_displays is None or binding.source_display_key not in source_displays:
+            raise ValueError("directional binding references a disconnected source display")
+        if target_displays is None or binding.target.display_key not in target_displays:
+            raise ValueError("directional binding references a disconnected target display")
+        if binding.source_host_id == binding.target.host_id:
+            if binding.connection_id is not None:
+                raise ValueError("same-Mac directional binding cannot use a UC route")
+        else:
+            connection = connection_values.get(binding.connection_id or "")
+            route = connection.route_from(binding.source_host_id) if connection else None
+            if route is None or route[1].host_id != binding.target.host_id:
+                raise ValueError("cross-Mac directional binding needs a matching UC route")
+        if binding.enabled:
+            low, high = sorted((binding.source_start, binding.source_end))
+            key = (
+                binding.source_host_id,
+                binding.source_display_key,
+                binding.direction,
+            )
+            for other_low, other_high in occupied.setdefault(key, []):
+                if max(low, other_low) < min(high, other_high):
+                    raise ValueError("directional binding source ranges overlap")
+            occupied[key].append((low, high))
+    return navigation

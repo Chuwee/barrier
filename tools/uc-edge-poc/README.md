@@ -16,6 +16,8 @@ The paired version supports:
   overlap conflict feedback.
 - Separate hidden Universal Control transport ranges for each direction.
 - A unified web topology that visualizes logical and transport edges.
+- Context-aware modifier + arrow navigation compiled from the virtual and local
+  display layouts, with editable source bands and landing positions.
 - A synchronized global keyboard switch with per-Mac display and landing point.
 - Persistent pairing, mappings, and armed state.
 
@@ -58,6 +60,23 @@ restarting the process after granting permissions.
    proportionally mapped destination point.
 
 ## Keyboard switch
+
+The **Contextual navigation** card can generate a complete `Command + Arrow`
+graph from the current layout. Explicit cross-Mac edge mappings take priority;
+directions not claimed by those mappings follow the physical arrangement of
+displays attached to each Mac. This makes the same chord contextual: from a
+left display, `Command + Right` goes to the center display, and from the center
+display it goes to the display on the right.
+
+Every generated rule remains editable. Its source display and fractional band
+select where the rule applies, while its destination display and X/Y percentages
+select the landing point. Same-Mac rules warp directly and do not need a
+transport route. Cross-Mac rules use one saved Universal Control mapping as the
+hidden transport. The contextual arrows and landing points are rendered over
+the topology. The modifier chord is shared by the four arrow keys and can be
+changed before generating or saving. While contextual navigation is enabled,
+it owns all four arrows for that chord; an unmapped direction does nothing and
+does not fall through to the older global keyboard switch.
 
 After creating at least one edge mapping, use **Keyboard switch** to choose a
 global modifier/key combination and the mapping whose real Universal Control

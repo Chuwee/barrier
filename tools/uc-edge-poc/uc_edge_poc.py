@@ -28,6 +28,8 @@ except ImportError as exc:  # pragma: no cover - dependency installation failure
 
 from edge_core import (
     Display,
+    DirectionalBinding,
+    DirectionalNavigation,
     EdgeConnection,
     EdgeEndpoint,
     HotkeyDestination,
@@ -44,11 +46,13 @@ from edge_core import (
     point_inside_display,
     point_inside_edge,
     point_on_edge,
+    propose_directional_navigation,
     should_trigger,
     span_fraction,
     target_delta,
     transform_handoff_delta,
     validate_connections,
+    validate_directional_navigation,
     validate_keyboard_switch,
 )
 from peer_transport import OutboundWorker, PeerRecord, request_json
@@ -68,9 +72,15 @@ HOTKEY_FLAG_MASKS = {
     "command": Quartz.kCGEventFlagMaskCommand,
 }
 HOTKEY_RELEVANT_FLAGS = sum(HOTKEY_FLAG_MASKS.values())
+ARROW_KEY_DIRECTIONS = {
+    123: "left",
+    124: "right",
+    125: "bottom",
+    126: "top",
+}
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 10
+AGENT_SCHEMA_VERSION = 11
 
 
 @dataclass
@@ -228,6 +238,8 @@ class EdgeRouter:
         self._load_connections(persisted.get("connections", []))
         self._keyboard_switch: KeyboardSwitch | None = None
         self._load_keyboard_switch(persisted.get("keyboard_switch"))
+        self._directional_navigation: DirectionalNavigation | None = None
+        self._load_directional_navigation(persisted.get("directional_navigation"))
 
         self._thread: threading.Thread | None = None
         self._tap: Any = None
@@ -241,7 +253,7 @@ class EdgeRouter:
         self._pending_arrival: PendingArrival | None = None
         self._arrival_placement: ArrivalPlacement | None = None
         self._arrival_latch: ArrivalLatch | None = None
-        self._hotkey_pressed = False
+        self._hotkey_pressed: int | None = None
         self._cooldown_until = 0.0
         self._events: deque[dict[str, Any]] = deque(maxlen=120)
         self._callback_ref = self._handle_event
@@ -283,9 +295,17 @@ class EdgeRouter:
         except (KeyError, TypeError, ValueError):
             self._keyboard_switch = None
 
+    def _load_directional_navigation(self, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        try:
+            self._directional_navigation = DirectionalNavigation.from_json(value)
+        except (KeyError, TypeError, ValueError):
+            self._directional_navigation = None
+
     def _save_locked(self) -> None:
         value = {
-            "version": 7,
+            "version": 8,
             "node_id": self._node_id,
             "node_name": self._node_name,
             "node_token": self._node_token,
@@ -294,6 +314,11 @@ class EdgeRouter:
             "connections": [connection.to_json() for connection in self._connections],
             "keyboard_switch": (
                 self._keyboard_switch.to_json() if self._keyboard_switch else None
+            ),
+            "directional_navigation": (
+                self._directional_navigation.to_json()
+                if self._directional_navigation
+                else None
             ),
             "armed": self._armed,
             "threshold": self._threshold,
@@ -350,6 +375,11 @@ class EdgeRouter:
             "keyboard_switch": (
                 self._keyboard_switch.to_json() if self._keyboard_switch else None
             ),
+            "directional_navigation": (
+                self._directional_navigation.to_json()
+                if self._directional_navigation
+                else None
+            ),
         }
         response = request_json(
             "POST",
@@ -382,10 +412,17 @@ class EdgeRouter:
             if isinstance(remote_keyboard_value, dict)
             else None
         )
+        remote_navigation_value = response.get("directional_navigation")
+        remote_navigation = (
+            DirectionalNavigation.from_json(remote_navigation_value)
+            if isinstance(remote_navigation_value, dict)
+            else None
+        )
         with self._lock:
             if self._peer is not None and self._peer.id != peer.id:
                 self._connections = ()
                 self._keyboard_switch = None
+                self._directional_navigation = None
             self._peer = peer
             if not self._connections and remote_connections:
                 self._connections = validate_connections(
@@ -398,12 +435,20 @@ class EdgeRouter:
                     self._connections,
                     (local, remote),
                 )
+            if self._directional_navigation is None and remote_navigation is not None:
+                self._directional_navigation = validate_directional_navigation(
+                    remote_navigation,
+                    self._connections,
+                    (local, remote),
+                )
             self._save_locked()
         self.log("peer", f"paired with {remote.name} at {address}:{peer.port}")
         if self._connections:
             self._sync_connections()
         if self._keyboard_switch:
             self._sync_keyboard_switch()
+        if self._directional_navigation:
+            self._sync_directional_navigation()
 
     def accept_pair(
         self,
@@ -435,11 +480,18 @@ class EdgeRouter:
             if isinstance(incoming_keyboard_value, dict)
             else None
         )
+        incoming_navigation_value = payload.get("directional_navigation")
+        incoming_navigation = (
+            DirectionalNavigation.from_json(incoming_navigation_value)
+            if isinstance(incoming_navigation_value, dict)
+            else None
+        )
         local = self.local_host(refresh=True)
         with self._lock:
             if self._peer is not None and self._peer.id != peer.id:
                 self._connections = ()
                 self._keyboard_switch = None
+                self._directional_navigation = None
             self._peer = peer
             if not self._connections and incoming:
                 self._connections = validate_connections(incoming, (local, remote))
@@ -449,10 +501,21 @@ class EdgeRouter:
                     self._connections,
                     (local, remote),
                 )
+            if self._directional_navigation is None and incoming_navigation is not None:
+                self._directional_navigation = validate_directional_navigation(
+                    incoming_navigation,
+                    self._connections,
+                    (local, remote),
+                )
             self._save_locked()
             connections = [connection.to_json() for connection in self._connections]
             keyboard_switch = (
                 self._keyboard_switch.to_json() if self._keyboard_switch else None
+            )
+            directional_navigation = (
+                self._directional_navigation.to_json()
+                if self._directional_navigation
+                else None
             )
         self.log("peer", f"accepted pairing from {remote.name}")
         return {
@@ -461,6 +524,7 @@ class EdgeRouter:
             "port": self._peer_port,
             "connections": connections,
             "keyboard_switch": keyboard_switch,
+            "directional_navigation": directional_navigation,
         }
 
     def disconnect_peer(self) -> None:
@@ -468,12 +532,13 @@ class EdgeRouter:
             self._peer = None
             self._connections = ()
             self._keyboard_switch = None
+            self._directional_navigation = None
             self._armed = False
             self._pending_arrival = None
             self._redirect = None
             self._arrival_placement = None
             self._arrival_latch = None
-            self._hotkey_pressed = False
+            self._hotkey_pressed = None
             self._save_locked()
         self.stop_tap()
         self.log("peer", "peer disconnected; routing disarmed")
@@ -549,6 +614,11 @@ class EdgeRouter:
                 "keyboard_switch": (
                     self._keyboard_switch.to_json() if self._keyboard_switch else None
                 ),
+                "directional_navigation": (
+                    self._directional_navigation.to_json()
+                    if self._directional_navigation
+                    else None
+                ),
                 "events": list(self._events)[:40],
             }
 
@@ -559,6 +629,7 @@ class EdgeRouter:
         connections = tuple(EdgeConnection.from_json(value) for value in values)
         connections = validate_connections(connections, self._hosts_for_validation())
         keyboard_changed = False
+        navigation_changed = False
         with self._lock:
             self._connections = connections
             if self._keyboard_switch is not None:
@@ -573,6 +644,20 @@ class EdgeRouter:
                 if route is None:
                     self._keyboard_switch = None
                     keyboard_changed = True
+            if self._directional_navigation is not None:
+                connection_ids = {item.id for item in connections}
+                bindings = tuple(
+                    binding
+                    for binding in self._directional_navigation.bindings
+                    if binding.connection_id is None
+                    or binding.connection_id in connection_ids
+                )
+                if bindings != self._directional_navigation.bindings:
+                    self._directional_navigation = replace(
+                        self._directional_navigation,
+                        bindings=bindings,
+                    )
+                    navigation_changed = True
             self._redirect = None
             self._arrival_placement = None
             self._arrival_latch = None
@@ -582,6 +667,8 @@ class EdgeRouter:
             self._sync_connections()
             if keyboard_changed:
                 self._sync_keyboard_switch()
+            if navigation_changed:
+                self._sync_directional_navigation()
 
     def _sync_connections(self) -> None:
         self._outbound.send(
@@ -599,7 +686,7 @@ class EdgeRouter:
             )
         with self._lock:
             self._keyboard_switch = shortcut
-            self._hotkey_pressed = False
+            self._hotkey_pressed = None
             self._save_locked()
         self.log(
             "config",
@@ -607,6 +694,55 @@ class EdgeRouter:
         )
         if sync:
             self._sync_keyboard_switch()
+
+    def replace_directional_navigation(self, value: Any, sync: bool = True) -> None:
+        navigation = (
+            DirectionalNavigation.from_json(value) if isinstance(value, dict) else None
+        )
+        if navigation is not None:
+            navigation = validate_directional_navigation(
+                navigation,
+                self._connections,
+                self._hosts_for_validation(),
+            )
+        with self._lock:
+            self._directional_navigation = navigation
+            self._hotkey_pressed = None
+            self._save_locked()
+        self.log(
+            "config",
+            (
+                f"saved {len(navigation.bindings)} contextual arrow rule(s)"
+                if navigation
+                else "contextual arrow navigation cleared"
+            ),
+        )
+        if sync:
+            self._sync_directional_navigation()
+
+    def propose_directional_navigation(
+        self,
+        modifiers: tuple[str, ...] = ("command",),
+    ) -> DirectionalNavigation:
+        navigation = propose_directional_navigation(
+            self._hosts_for_validation(),
+            self._connections,
+            modifiers,
+        )
+        self.replace_directional_navigation(navigation.to_json())
+        return navigation
+
+    def _sync_directional_navigation(self) -> None:
+        self._outbound.send(
+            "/peer/directional-navigation",
+            {
+                "directional_navigation": (
+                    self._directional_navigation.to_json()
+                    if self._directional_navigation
+                    else None
+                )
+            },
+        )
 
     def _sync_keyboard_switch(self) -> None:
         self._outbound.send(
@@ -626,7 +762,7 @@ class EdgeRouter:
                 self._pending_arrival = None
                 self._arrival_placement = None
                 self._arrival_latch = None
-                self._hotkey_pressed = False
+                self._hotkey_pressed = None
             self._save_locked()
         if armed:
             self.start_tap()
@@ -711,6 +847,11 @@ class EdgeRouter:
                 "connections": [connection.to_json() for connection in self._connections],
                 "keyboard_switch": (
                     self._keyboard_switch.to_json() if self._keyboard_switch else None
+                ),
+                "directional_navigation": (
+                    self._directional_navigation.to_json()
+                    if self._directional_navigation
+                    else None
                 ),
                 "armed": self._armed,
                 "tap": {
@@ -804,7 +945,7 @@ class EdgeRouter:
             if redirect is None or redirect.handoff_id != handoff_id:
                 return
             self._redirect = None
-            self._hotkey_pressed = False
+            self._hotkey_pressed = None
             self._cooldown_until = time.monotonic() + self._cooldown_ms / 1000.0
         self.log("handoff", "Universal Control transfer confirmed by peer")
 
@@ -898,7 +1039,7 @@ class EdgeRouter:
             except Exception as exc:  # Never break the system input stream.
                 with self._lock:
                     self._error = f"keyboard callback error: {exc}"
-                    self._hotkey_pressed = False
+                    self._hotkey_pressed = None
                 self.log("error", self._error)
                 return event
         if event_type not in MOUSE_EVENT_TYPES:
@@ -920,31 +1061,143 @@ class EdgeRouter:
         )
         with self._lock:
             shortcut = self._keyboard_switch
+            navigation = self._directional_navigation
             armed = self._armed
             pressed = self._hotkey_pressed
 
         if event_type == Quartz.kCGEventKeyUp:
-            if shortcut is not None and key_code == shortcut.key_code and pressed:
+            if pressed == key_code:
                 with self._lock:
-                    self._hotkey_pressed = False
+                    self._hotkey_pressed = None
                 return None
             return event
-        if shortcut is None or not shortcut.enabled or not armed:
+        if not armed:
             return event
-        expected_flags = sum(HOTKEY_FLAG_MASKS[item] for item in shortcut.modifiers)
         actual_flags = int(Quartz.CGEventGetFlags(event)) & HOTKEY_RELEVANT_FLAGS
-        if key_code != shortcut.key_code or actual_flags != expected_flags:
-            return event
         is_repeat = bool(
             Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventAutorepeat)
         )
-        if not pressed and not is_repeat:
+        direction = ARROW_KEY_DIRECTIONS.get(key_code)
+        if navigation is not None and navigation.enabled and direction is not None:
+            expected_flags = sum(
+                HOTKEY_FLAG_MASKS[item] for item in navigation.modifiers
+            )
+            if actual_flags == expected_flags:
+                binding = self._current_directional_binding(navigation, direction)
+                if pressed is None and not is_repeat:
+                    with self._lock:
+                        self._hotkey_pressed = key_code
+                    if binding is not None:
+                        arrow = {
+                            "left": "Left Arrow",
+                            "right": "Right Arrow",
+                            "top": "Up Arrow",
+                            "bottom": "Down Arrow",
+                        }[direction]
+                        label = "+".join(
+                            [*(item.title() for item in navigation.modifiers), arrow]
+                        )
+                        self._begin_directional_switch(binding, label)
+                return None
+
+        if shortcut is None or not shortcut.enabled:
+            return event
+        expected_flags = sum(HOTKEY_FLAG_MASKS[item] for item in shortcut.modifiers)
+        if key_code != shortcut.key_code or actual_flags != expected_flags:
+            return event
+        if pressed is None and not is_repeat:
             with self._lock:
-                self._hotkey_pressed = True
+                self._hotkey_pressed = key_code
             self._begin_keyboard_handoff(shortcut)
         return None
 
+    def _current_directional_binding(
+        self,
+        navigation: DirectionalNavigation,
+        direction: str,
+    ) -> DirectionalBinding | None:
+        location = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        point = Point(float(location.x), float(location.y))
+        display = next(
+            (
+                item
+                for item in self.displays(refresh=False)
+                if inside_display(item, point, 1.0)
+            ),
+            None,
+        )
+        if display is None:
+            return None
+        position = span_fraction(display, direction, point)
+        return navigation.binding_for(
+            self._node_id,
+            display.key,
+            direction,
+            position,
+        )
+
+    def _begin_directional_switch(
+        self,
+        binding: DirectionalBinding,
+        label: str,
+    ) -> None:
+        if binding.target.host_id == self._node_id:
+            display = next(
+                (
+                    item
+                    for item in self.displays(refresh=False)
+                    if item.key == binding.target.display_key
+                ),
+                None,
+            )
+            if display is None:
+                self.log("navigation", "local target display is unavailable")
+                self._release_keyboard_latch()
+                return
+            target = point_inside_display(
+                display,
+                binding.target.x_percent,
+                binding.target.y_percent,
+            )
+            with self._lock:
+                self._last_point = target
+                self._cooldown_until = (
+                    time.monotonic() + self._arrival_guard_ms / 1000.0
+                )
+            Quartz.CGWarpMouseCursorPosition(_cg_point(target))
+            self.log(
+                "navigation",
+                f"{label}: moved to {display.name} "
+                f"at {binding.target.x_percent:.1f}%,{binding.target.y_percent:.1f}%",
+            )
+            release_timer = threading.Timer(0.4, self._release_keyboard_latch)
+            release_timer.daemon = True
+            release_timer.start()
+            return
+        self._begin_remote_keyboard_handoff(
+            binding.connection_id or "",
+            binding.target,
+            label,
+        )
+
     def _begin_keyboard_handoff(self, shortcut: KeyboardSwitch) -> None:
+        peer = self.peer()
+        destination = shortcut.destination_for(peer.id) if peer else None
+        if destination is None:
+            self.log("keyboard", "switch destination is unavailable")
+            return
+        self._begin_remote_keyboard_handoff(
+            shortcut.connection_id,
+            destination,
+            shortcut.key_label,
+        )
+
+    def _begin_remote_keyboard_handoff(
+        self,
+        connection_id: str,
+        destination: HotkeyDestination,
+        label: str,
+    ) -> None:
         now = time.monotonic()
         with self._lock:
             peer = self._peer
@@ -952,7 +1205,7 @@ class EdgeRouter:
                 (
                     item
                     for item in self._connections
-                    if item.id == shortcut.connection_id
+                    if item.id == connection_id
                 ),
                 None,
             )
@@ -963,7 +1216,6 @@ class EdgeRouter:
             self.log("keyboard", "switch ignored because the paired Mac is offline")
             return
         route = connection.route_from(self._node_id) if connection else None
-        destination = shortcut.destination_for(peer.id)
         if route is None or destination is None:
             self.log("keyboard", "switch references an unavailable route")
             return
@@ -1005,7 +1257,7 @@ class EdgeRouter:
         )
         self.log(
             "keyboard",
-            f"{shortcut.key_label}: switching to {peer.name} via {connection.name}",
+            f"{label}: switching to {peer.name} via {connection.name}",
         )
         release_timer = threading.Timer(0.75, self._release_keyboard_latch)
         release_timer.daemon = True
@@ -1024,7 +1276,7 @@ class EdgeRouter:
 
     def _release_keyboard_latch(self) -> None:
         with self._lock:
-            self._hotkey_pressed = False
+            self._hotkey_pressed = None
 
     def _expire_keyboard_redirect(self, redirect: RedirectState) -> None:
         with self._lock:
@@ -1660,6 +1912,24 @@ class UiHandler(JsonHandler):
                 self.server.router.replace_keyboard_switch(
                     payload.get("keyboard_switch")
                 )
+            elif self.path == "/api/directional-navigation":
+                self.server.router.replace_directional_navigation(
+                    payload.get("directional_navigation")
+                )
+            elif self.path == "/api/directional-navigation/propose":
+                raw_modifiers = payload.get("modifiers", ["command"])
+                if not isinstance(raw_modifiers, list):
+                    raise ValueError("modifiers must be a list")
+                navigation = self.server.router.propose_directional_navigation(
+                    tuple(str(item).lower() for item in raw_modifiers)
+                )
+                self._json(
+                    {
+                        "ok": True,
+                        "directional_navigation": navigation.to_json(),
+                    }
+                )
+                return
             elif self.path == "/api/routing/activate":
                 self.server.router.set_armed(True)
             elif self.path == "/api/routing/stop":
@@ -1719,6 +1989,11 @@ class PeerHandler(JsonHandler):
             elif self.path == "/peer/keyboard-switch":
                 self.server.router.replace_keyboard_switch(
                     payload.get("keyboard_switch"),
+                    sync=False,
+                )
+            elif self.path == "/peer/directional-navigation":
+                self.server.router.replace_directional_navigation(
+                    payload.get("directional_navigation"),
                     sync=False,
                 )
             elif self.path == "/peer/routing":

@@ -36,6 +36,7 @@
         <div class="legend">
           <span><i class="logical"></i> Logical handoff</span>
           <span><i class="transport"></i> Hidden UC transport</span>
+          <span><i class="contextual"></i> Contextual arrow</span>
           <span><i class="landing"></i> Shortcut landing</span>
         </div>
       </div>
@@ -111,6 +112,44 @@
         <div id="runtime-message" class="message"></div>
       </section>
     </div>
+
+    <section class="navigation-card">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Contextual navigation</span>
+          <h2>One chord, spatial meaning</h2>
+        </div>
+        <label class="toggle-label"><input id="navigation-enabled" type="checkbox" checked> Enabled</label>
+      </div>
+      <div class="navigation-intro">
+        <div>
+          <p class="navigation-lede">The active display supplies the context. Press the same arrow repeatedly to walk through the virtual layout, including displays attached to the same Mac.</p>
+          <div class="modifier-row navigation-modifiers">
+            <label><input id="navigation-control" type="checkbox"> Control</label>
+            <label><input id="navigation-option" type="checkbox"> Option</label>
+            <label><input id="navigation-shift" type="checkbox"> Shift</label>
+            <label><input id="navigation-command" type="checkbox" checked> Command</label>
+            <span class="arrow-keyset">+ ← ↑ ↓ →</span>
+          </div>
+        </div>
+        <div class="proposal-box">
+          <span class="proposal-kicker">Layout compiler</span>
+          <strong>Infer the complete arrow graph</strong>
+          <p>Explicit cross-Mac mappings win. Unused directions follow each Mac's physical display arrangement.</p>
+          <button id="propose-navigation" type="button">Generate from layout</button>
+        </div>
+      </div>
+      <div class="navigation-table-head" aria-hidden="true">
+        <span>When here</span><span>Press</span><span>Source band</span><span>Go here</span><span>Landing</span><span>Transport</span><span></span>
+      </div>
+      <div id="navigation-rules" class="navigation-rules"></div>
+      <div class="actions">
+        <button id="save-navigation" type="button">Save contextual navigation</button>
+        <button id="add-navigation-rule" class="secondary" type="button">Add rule</button>
+        <button id="clear-navigation" class="text-button" type="button">Remove setup</button>
+        <span id="navigation-message" class="message"></span>
+      </div>
+    </section>
 
     <section class="shortcut-card">
       <div class="section-head">

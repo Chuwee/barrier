@@ -1,4 +1,7 @@
 const EDGES = ["left", "right", "top", "bottom"];
+const DIRECTION_LABELS = {left: "Left", right: "Right", top: "Up", bottom: "Down"};
+const DIRECTION_ARROWS = {left: "←", right: "→", top: "↑", bottom: "↓"};
+const MODIFIER_GLYPHS = {control: "⌃", option: "⌥", shift: "⇧", command: "⌘"};
 const HOTKEYS = [
   ["F1", 122], ["F2", 120], ["F3", 99], ["F4", 118], ["F5", 96], ["F6", 97],
   ["F7", 98], ["F8", 100], ["F9", 101], ["F10", 109], ["F11", 103], ["F12", 111],
@@ -17,6 +20,9 @@ let state = null;
 let editId = null;
 let formSignature = "";
 let shortcutSignature = "";
+let navigationSignature = "";
+let navigationDraft = null;
+let navigationDirty = false;
 let topologyLayouts = new Map();
 let dragState = null;
 
@@ -120,6 +126,108 @@ function initializeShortcutOptions(force = false) {
   field("shortcut-b-y", remoteDestination?.y_percent ?? 50);
   $("save-shortcut").disabled = !peerHost || !state.connections.length;
   $("clear-shortcut").disabled = !shortcut;
+}
+
+function displayReferenceOptions() {
+  const hosts = [state.local];
+  if (state.peer) hosts.push({id: state.peer.id, name: state.peer.name, displays: state.peer.displays});
+  return hosts.flatMap((host) => (host.displays || []).map((display) => ({
+    value: JSON.stringify([host.id, display.key]),
+    label: `${host.name} · ${display.name}`,
+  })));
+}
+
+function displayReference(hostId, displayKey) {
+  return JSON.stringify([hostId, displayKey]);
+}
+
+function parseDisplayReference(value) {
+  const parsed = JSON.parse(value);
+  if (!Array.isArray(parsed) || parsed.length !== 2) throw new Error("Choose a valid display");
+  return {host_id: String(parsed[0]), display_key: String(parsed[1])};
+}
+
+function navigationRouteOptions(preferred) {
+  const options = [{value: "", label: "Local display warp"}, ...state.connections.map((connection) => ({
+    value: connection.id,
+    label: `${connection.name}${connection.enabled ? "" : " (edges off)"}`,
+  }))];
+  return options.map((option) => `<option value="${esc(option.value)}" ${String(option.value) === String(preferred || "") ? "selected" : ""}>${esc(option.label)}</option>`).join("");
+}
+
+function navigationDisplayOptions(preferred) {
+  return displayReferenceOptions().map((option) => `<option value="${esc(option.value)}" ${option.value === preferred ? "selected" : ""}>${esc(option.label)}</option>`).join("");
+}
+
+function renderNavigationRules() {
+  const box = $("navigation-rules");
+  const rules = navigationDraft?.bindings || [];
+  if (!rules.length) {
+    box.innerHTML = `<div class="navigation-empty">No arrow routes yet. Generate them from the topology or add one manually.</div>`;
+    return;
+  }
+  box.innerHTML = rules.map((rule, index) => {
+    const source = displayReference(rule.source_host_id, rule.source_display_key);
+    const target = displayReference(rule.target.host_id, rule.target.display_key);
+    const directions = EDGES.map((direction) => `<option value="${direction}" ${direction === rule.direction ? "selected" : ""}>${DIRECTION_LABELS[direction]} arrow</option>`).join("");
+    return `<article class="navigation-rule${rule.enabled ? "" : " is-disabled"}" data-index="${index}" data-id="${esc(rule.id)}">
+      <label><span class="mobile-label">When here</span><select data-field="source">${navigationDisplayOptions(source)}</select></label>
+      <div class="navigation-direction"><span class="navigation-arrow">${DIRECTION_ARROWS[rule.direction]}</span><select data-field="direction">${directions}</select></div>
+      <label><span class="mobile-label">Source band</span><span class="navigation-range"><input data-field="source_start" type="number" min="0" max="100" step="0.1" value="${esc(rule.source_start)}" aria-label="Source band start"><input data-field="source_end" type="number" min="0" max="100" step="0.1" value="${esc(rule.source_end)}" aria-label="Source band end"></span></label>
+      <label><span class="mobile-label">Go here</span><select data-field="target">${navigationDisplayOptions(target)}</select></label>
+      <label><span class="mobile-label">Landing X/Y</span><span class="navigation-landing"><input data-field="x_percent" type="number" min="0" max="100" step="0.1" value="${esc(rule.target.x_percent)}" aria-label="Landing horizontal percent"><input data-field="y_percent" type="number" min="0" max="100" step="0.1" value="${esc(rule.target.y_percent)}" aria-label="Landing vertical percent"></span></label>
+      <label><span class="mobile-label">Transport</span><select data-field="connection_id">${navigationRouteOptions(rule.connection_id)}</select></label>
+      <div class="navigation-rule-actions"><label class="toggle-label" title="Enable rule"><input data-field="enabled" type="checkbox" ${rule.enabled ? "checked" : ""}> On</label><button class="text-button remove-navigation-rule" type="button">Delete</button></div>
+    </article>`;
+  }).join("");
+  box.querySelectorAll(".navigation-rule").forEach((row) => {
+    const changed = (event) => {
+      navigationDirty = true;
+      const direction = row.querySelector('[data-field="direction"]').value;
+      row.querySelector(".navigation-arrow").textContent = DIRECTION_ARROWS[direction];
+      row.classList.toggle("is-disabled", !row.querySelector('[data-field="enabled"]').checked);
+      if (event.target.dataset.field === "source" || event.target.dataset.field === "target") {
+        const source = parseDisplayReference(row.querySelector('[data-field="source"]').value);
+        const target = parseDisplayReference(row.querySelector('[data-field="target"]').value);
+        const route = row.querySelector('[data-field="connection_id"]');
+        if (source.host_id === target.host_id) route.value = "";
+        else if (!route.value && state.connections.length) route.value = state.connections[0].id;
+      }
+      try { navigationDraft = formDirectionalNavigation(); } catch (_) { /* Save reports incomplete fields. */ }
+      renderTopology();
+    };
+    row.querySelectorAll("input, select").forEach((input) => input.addEventListener("input", changed));
+    row.querySelector(".remove-navigation-rule").onclick = () => {
+      const index = Number(row.dataset.index);
+      navigationDraft = formDirectionalNavigation();
+      navigationDraft.bindings.splice(index, 1);
+      navigationDirty = true;
+      renderNavigationRules();
+      renderTopology();
+    };
+  });
+}
+
+function initializeNavigationEditor(force = false) {
+  if (!state) return;
+  const signature = JSON.stringify({
+    local: state.local.displays.map((display) => display.key),
+    peer: state.peer?.displays.map((display) => display.key),
+    connections: state.connections.map((connection) => [connection.id, connection.name, connection.enabled]),
+    navigation: state.directional_navigation,
+  });
+  if (!force && (navigationDirty || signature === navigationSignature)) return;
+  navigationSignature = signature;
+  navigationDraft = state.directional_navigation
+    ? JSON.parse(JSON.stringify(state.directional_navigation))
+    : {modifiers: ["command"], bindings: [], enabled: true};
+  $("navigation-enabled").checked = navigationDraft.enabled;
+  for (const modifier of ["control", "option", "shift", "command"]) {
+    $(`navigation-${modifier}`).checked = navigationDraft.modifiers.includes(modifier);
+  }
+  $("save-navigation").disabled = !displayReferenceOptions().length;
+  $("clear-navigation").disabled = !state.directional_navigation;
+  renderNavigationRules();
 }
 
 function renderStatus() {
@@ -249,6 +357,27 @@ function drawKeyboardLandings(layouts) {
   return html;
 }
 
+function drawDirectionalNavigation(layouts) {
+  let navigation = state.directional_navigation;
+  try { navigation = formDirectionalNavigation(); }
+  catch (_) { /* Keep the last complete draft visualization. */ }
+  if (!navigation?.enabled) return "";
+  const chord = navigation.modifiers.map((modifier) => MODIFIER_GLYPHS[modifier]).join("");
+  let html = "";
+  for (const rule of navigation.bindings.filter((binding) => binding.enabled)) {
+    const sourceRect = layouts.get(rule.source_host_id)?.rects.get(rule.source_display_key);
+    const target = landingPoint(layouts, rule.target);
+    if (!sourceRect || !target) continue;
+    const source = midpoint(segment(sourceRect, rule.direction, rule.source_start, rule.source_end));
+    const bend = Math.max(30, Math.abs(target.x - source.x) * .28);
+    html += `<path class="navigation-path" marker-end="url(#navigation-arrowhead)" d="M ${source.x} ${source.y} C ${source.x + bend} ${source.y}, ${target.x - bend} ${target.y}, ${target.x} ${target.y}"/>`;
+    html += `<circle class="navigation-node" cx="${source.x}" cy="${source.y}" r="5"/>`;
+    html += `<circle class="navigation-node" cx="${target.x}" cy="${target.y}" r="5"/>`;
+    html += `<text class="navigation-label" x="${source.x + 8}" y="${source.y - 8}">${esc(chord + DIRECTION_ARROWS[rule.direction])}</text>`;
+  }
+  return html;
+}
+
 function rangesOverlap(first, second) {
   const firstLow = Math.min(first.start, first.end), firstHigh = Math.max(first.start, first.end);
   const secondLow = Math.min(second.start, second.end), secondHigh = Math.max(second.start, second.end);
@@ -374,8 +503,10 @@ function renderTopology() {
       : `${draft.a.start}→${draft.a.end}% maps proportionally to ${draft.b.start}→${draft.b.end}%.`;
   }
   const hits = edgeHits(state.local, left, "a") + edgeHits(remote, right, "b");
+  const navigation = drawDirectionalNavigation(layouts);
   const landings = drawKeyboardLandings(layouts);
-  svg.innerHTML = left.svg + right.svg + transports + routes + landings + hits + draftHtml;
+  const definitions = `<defs><marker id="navigation-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#315a6b"/></marker></defs>`;
+  svg.innerHTML = definitions + left.svg + right.svg + transports + routes + navigation + landings + hits + draftHtml;
   bindTopologyTargets();
 }
 
@@ -511,6 +642,7 @@ function render(next) {
   renderPairPanel();
   initializeFormOptions();
   initializeShortcutOptions();
+  initializeNavigationEditor();
   if (!dragState) renderTopology();
   renderConnections();
   renderEvents();
@@ -619,6 +751,103 @@ function formKeyboardSwitch() {
   };
 }
 
+function formDirectionalNavigation() {
+  const modifiers = ["control", "option", "shift", "command"].filter((modifier) => $(`navigation-${modifier}`).checked);
+  const bindings = [...$("navigation-rules").querySelectorAll(".navigation-rule")].map((row) => {
+    const source = parseDisplayReference(row.querySelector('[data-field="source"]').value);
+    const target = parseDisplayReference(row.querySelector('[data-field="target"]').value);
+    const values = {
+      source_start: Number(row.querySelector('[data-field="source_start"]').value),
+      source_end: Number(row.querySelector('[data-field="source_end"]').value),
+      x_percent: Number(row.querySelector('[data-field="x_percent"]').value),
+      y_percent: Number(row.querySelector('[data-field="y_percent"]').value),
+    };
+    if (!Object.values(values).every((value) => Number.isFinite(value) && value >= 0 && value <= 100)) {
+      throw new Error("Rule ranges and landing positions must stay between 0 and 100%");
+    }
+    if (values.source_start === values.source_end) throw new Error("A source band cannot have zero length");
+    const connectionId = row.querySelector('[data-field="connection_id"]').value || null;
+    if (source.host_id !== target.host_id && !connectionId) throw new Error("Cross-Mac rules need a UC transport route");
+    return {
+      id: row.dataset.id,
+      source_host_id: source.host_id,
+      source_display_key: source.display_key,
+      direction: row.querySelector('[data-field="direction"]').value,
+      source_start: values.source_start,
+      source_end: values.source_end,
+      target: {
+        host_id: target.host_id,
+        display_key: target.display_key,
+        x_percent: values.x_percent,
+        y_percent: values.y_percent,
+      },
+      connection_id: connectionId,
+      enabled: row.querySelector('[data-field="enabled"]').checked,
+    };
+  });
+  return {modifiers, bindings, enabled: $("navigation-enabled").checked};
+}
+
+async function saveDirectionalNavigation() {
+  try {
+    const navigation = formDirectionalNavigation();
+    if (!navigation.modifiers.length) throw new Error("Choose at least one modifier key");
+    await api("/api/directional-navigation", {directional_navigation: navigation});
+    navigationDirty = false;
+    navigationSignature = "";
+    message("navigation-message", `${navigation.bindings.length} contextual arrow rule(s) saved and synchronized.`);
+    await refresh();
+  } catch (error) { message("navigation-message", error.message); }
+}
+
+async function proposeDirectionalNavigation() {
+  try {
+    const modifiers = ["control", "option", "shift", "command"].filter((modifier) => $(`navigation-${modifier}`).checked);
+    if (!modifiers.length) throw new Error("Choose at least one modifier key");
+    const response = await api("/api/directional-navigation/propose", {modifiers});
+    navigationDirty = false;
+    navigationSignature = "";
+    navigationDraft = response.directional_navigation;
+    message("navigation-message", `Generated ${navigationDraft.bindings.length} contextual arrow rule(s) from the current layout.`);
+    await refresh();
+  } catch (error) { message("navigation-message", error.message); }
+}
+
+function addDirectionalRule() {
+  try {
+    navigationDraft = formDirectionalNavigation();
+    const displays = displayReferenceOptions();
+    if (!displays.length) throw new Error("No displays are available");
+    const source = parseDisplayReference(displays[0].value);
+    const preferredTarget = displays.find((item) => item.value !== displays[0].value) || displays[0];
+    const target = parseDisplayReference(preferredTarget.value);
+    navigationDraft.bindings.push({
+      id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+      source_host_id: source.host_id,
+      source_display_key: source.display_key,
+      direction: "right",
+      source_start: 0,
+      source_end: 100,
+      target: {...target, x_percent: 0, y_percent: 50},
+      connection_id: source.host_id === target.host_id ? null : (state.connections[0]?.id || null),
+      enabled: true,
+    });
+    navigationDirty = true;
+    renderNavigationRules();
+    renderTopology();
+  } catch (error) { message("navigation-message", error.message); }
+}
+
+async function clearDirectionalNavigation() {
+  try {
+    await api("/api/directional-navigation", {directional_navigation: null});
+    navigationDirty = false;
+    navigationSignature = "";
+    message("navigation-message", "Contextual navigation removed.");
+    await refresh();
+  } catch (error) { message("navigation-message", error.message); }
+}
+
 async function saveKeyboardSwitch() {
   try {
     const keyboardSwitch = formKeyboardSwitch();
@@ -687,6 +916,10 @@ $("save-mapping").onclick = saveMapping;
 $("clear-edit").onclick = clearEditor;
 $("save-shortcut").onclick = saveKeyboardSwitch;
 $("clear-shortcut").onclick = clearKeyboardSwitch;
+$("save-navigation").onclick = saveDirectionalNavigation;
+$("propose-navigation").onclick = proposeDirectionalNavigation;
+$("add-navigation-rule").onclick = addDirectionalRule;
+$("clear-navigation").onclick = clearDirectionalNavigation;
 $("activate").onclick = () => routing("/api/routing/activate", "Routing activation sent to both Macs.");
 $("stop").onclick = () => routing("/api/routing/stop", "Routing stopped on both Macs.");
 $("restore").onclick = () => routing("/api/restore", "Emergency stop requested.");
@@ -700,6 +933,18 @@ for (const id of ["a-display", "a-edge", "a-start", "a-end", "b-display", "b-edg
 for (const id of ["shortcut-a-display", "shortcut-a-x", "shortcut-a-y", "shortcut-b-display", "shortcut-b-x", "shortcut-b-y", "shortcut-key"]) {
   $(id).addEventListener("input", () => state?.peer && renderTopology());
 }
+for (const modifier of ["control", "option", "shift", "command"]) {
+  $(`navigation-${modifier}`).addEventListener("input", () => {
+    navigationDirty = true;
+    try { navigationDraft = formDirectionalNavigation(); } catch (_) { /* Save reports incomplete fields. */ }
+    renderTopology();
+  });
+}
+$("navigation-enabled").addEventListener("input", () => {
+  navigationDirty = true;
+  try { navigationDraft = formDirectionalNavigation(); } catch (_) { /* Save reports incomplete fields. */ }
+  renderTopology();
+});
 window.addEventListener("resize", () => state && renderTopology());
 setInterval(refresh, 1000);
 refresh();
