@@ -100,6 +100,8 @@ uv run install_launch_agent.py uninstall
 - The web UI binds only to loopback. The peer API binds to the LAN and requires
   a random per-node bearer token established with the displayed pair code.
 - Peer traffic is authenticated but not encrypted. Use only on a trusted LAN.
+- Authenticated peer status includes recent handoff diagnostics and cursor
+  coordinates so asymmetric two-Mac failures can be inspected remotely.
 - The tool does not change Universal Control preferences or private Apple layout
   data.
 

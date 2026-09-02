@@ -56,6 +56,7 @@ MOUSE_EVENT_TYPES = (
 )
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
+AGENT_SCHEMA_VERSION = 6
 
 
 @dataclass
@@ -85,6 +86,8 @@ class ArrivalPlacement:
     destination_edge: str
     point: Point
     expires_at: float
+    rewritten_events: int = 0
+    forced_warps: int = 0
 
 
 def _cg_point(point: Point) -> Any:
@@ -433,9 +436,11 @@ class EdgeRouter:
                 last_connected = False
 
     def peer_state(self) -> dict[str, Any]:
+        cursor = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
         with self._lock:
             thread_alive = bool(self._thread and self._thread.is_alive())
             return {
+                "agent_schema": AGENT_SCHEMA_VERSION,
                 "host": self.local_host(refresh=True).to_json(),
                 "armed": self._armed,
                 "tap": {
@@ -444,6 +449,21 @@ class EdgeRouter:
                     "error": self._error,
                 },
                 "permissions": self.permissions(),
+                "settings": {
+                    "threshold": self._threshold,
+                    "redirect_ms": self._redirect_ms,
+                    "cooldown_ms": self._cooldown_ms,
+                    "arrival_timeout_ms": self._arrival_timeout_ms,
+                    "arrival_guard_ms": self._arrival_guard_ms,
+                    "transport_gain": self._transport_gain,
+                    "transport_min_delta": self._transport_min_delta,
+                    "transport_max_delta": self._transport_max_delta,
+                },
+                "cursor": {"x": float(cursor.x), "y": float(cursor.y)},
+                "redirecting": self._redirect is not None,
+                "pending_arrival": self._pending_arrival is not None,
+                "placing_arrival": self._arrival_placement is not None,
+                "events": list(self._events)[:40],
             }
 
     def authorized(self, authorization: str) -> bool:
@@ -552,6 +572,7 @@ class EdgeRouter:
             peer = self._peer
             thread_alive = bool(self._thread and self._thread.is_alive())
             return {
+                "agent_schema": AGENT_SCHEMA_VERSION,
                 "local": local.to_json(),
                 "peer": peer.to_json() if peer else None,
                 "connections": [connection.to_json() for connection in self._connections],
@@ -981,6 +1002,13 @@ class EdgeRouter:
         dy: float,
         now: float,
     ) -> Any:
+        source = Quartz.CGEventGetLocation(event)
+        source_pid = int(
+            Quartz.CGEventGetIntegerValueField(
+                event,
+                Quartz.kCGEventSourceUnixProcessID,
+            )
+        )
         target = point_inside_edge(
             display,
             destination.edge,
@@ -1018,7 +1046,9 @@ class EdgeRouter:
         self.log(
             "arrival",
             f"placed cursor on {display.name} {destination.edge} at "
-            f"{destination.position(pending.normalized):.1f}%",
+            f"{destination.position(pending.normalized):.1f}% "
+            f"({target.x:.0f},{target.y:.0f}) from "
+            f"({float(source.x):.0f},{float(source.y):.0f}), pid {source_pid}",
         )
         return event
 
@@ -1035,6 +1065,7 @@ class EdgeRouter:
             if self._arrival_placement is not placement or not self._armed:
                 return
             point = placement.point
+            placement.forced_warps += 1
             self._last_point = point
         Quartz.CGWarpMouseCursorPosition(_cg_point(point))
 
@@ -1074,6 +1105,7 @@ class EdgeRouter:
         Quartz.CGWarpMouseCursorPosition(_cg_point(target))
         with self._lock:
             placement.point = target
+            placement.rewritten_events += 1
             self._last_point = target
             if now >= placement.expires_at and self._arrival_placement is placement:
                 self._arrival_placement = None
