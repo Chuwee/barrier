@@ -21,6 +21,7 @@ from edge_core import (
     point_on_edge,
     should_trigger,
     target_delta,
+    transform_handoff_delta,
     validate_connections,
     validate_keyboard_switch,
 )
@@ -129,6 +130,30 @@ class GeometryTests(unittest.TestCase):
 
     def test_transport_range_confirmation_supports_reversed_ranges(self) -> None:
         self.assertTrue(near_edge_segment(DISPLAY, "right", 80, 20, Point(1297, 450), 8))
+
+    def test_handoff_delta_is_continuous_between_opposite_edges(self) -> None:
+        source = EdgeEndpoint("a", "one", "right")
+        destination = EdgeEndpoint("b", "two", "left")
+        self.assertEqual(
+            transform_handoff_delta(source, destination, 6, -3),
+            (6, -3),
+        )
+
+    def test_handoff_delta_rotates_normal_and_tangent(self) -> None:
+        source = EdgeEndpoint("a", "one", "bottom")
+        destination = EdgeEndpoint("b", "two", "left")
+        self.assertEqual(
+            transform_handoff_delta(source, destination, 3, 6),
+            (6, 3),
+        )
+
+    def test_handoff_delta_flips_tangent_for_reversed_mapping(self) -> None:
+        source = EdgeEndpoint("a", "one", "right", 0, 100)
+        destination = EdgeEndpoint("b", "two", "left", 100, 0)
+        self.assertEqual(
+            transform_handoff_delta(source, destination, 6, 3),
+            (6, -3),
+        )
 
 
 class TopologyTests(unittest.TestCase):

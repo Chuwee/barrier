@@ -80,6 +80,10 @@ the pointer exposed on the hidden transport edge.
 After a confirmed transfer, a 220 ms settling guard keeps any in-flight UC
 transport events on the logical destination. This prevents Apple's physical
 edge from immediately pulling the cursor back to the hidden transport edge.
+Edge arrivals integrate both mouse axes through a source-to-destination basis
+transform during that guard instead of repeatedly warping or collapsing motion
+onto one axis. Directed ranges also determine whether tangential motion is
+preserved or flipped.
 The hidden edge also receives a bounded movement boost so Universal Control's
 push-through threshold is reached without requiring a long physical push.
 An arrived edge remains latched until the cursor moves inward, preventing the

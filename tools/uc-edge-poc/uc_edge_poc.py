@@ -47,6 +47,7 @@ from edge_core import (
     should_trigger,
     span_fraction,
     target_delta,
+    transform_handoff_delta,
     validate_connections,
     validate_keyboard_switch,
 )
@@ -69,7 +70,7 @@ HOTKEY_FLAG_MASKS = {
 HOTKEY_RELEVANT_FLAGS = sum(HOTKEY_FLAG_MASKS.values())
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 9
+AGENT_SCHEMA_VERSION = 10
 
 
 @dataclass
@@ -101,6 +102,9 @@ class ArrivalPlacement:
     destination_edge: str
     point: Point
     expires_at: float
+    source_endpoint: EdgeEndpoint | None = None
+    destination_endpoint: EdgeEndpoint | None = None
+    transport: TransportEdge | None = None
     rewritten_events: int = 0
     forced_warps: int = 0
 
@@ -1097,6 +1101,28 @@ class EdgeRouter:
             return event
 
         displays = {display.key: display for display in self.displays(refresh=False)}
+        if placement is not None:
+            display = displays.get(placement.display_key)
+            if display is None:
+                with self._lock:
+                    if self._arrival_placement is placement:
+                        self._arrival_placement = None
+            else:
+                return self._apply_placement_event(
+                    event,
+                    placement,
+                    display,
+                    (
+                        displays.get(placement.transport.display_key)
+                        if placement.transport is not None
+                        else None
+                    ),
+                    current,
+                    dx,
+                    dy,
+                    now,
+                )
+
         if arrival_latch is not None:
             latched_display = displays.get(arrival_latch.display_key)
             if latched_display is None:
@@ -1114,23 +1140,6 @@ class EdgeRouter:
                         self._arrival_latch = None
                 self.log("arrival", "destination edge released after inward movement")
                 arrival_latch = None
-
-        if placement is not None:
-            display = displays.get(placement.display_key)
-            if display is None:
-                with self._lock:
-                    if self._arrival_placement is placement:
-                        self._arrival_placement = None
-            else:
-                return self._apply_placement_event(
-                    event,
-                    placement,
-                    display,
-                    current,
-                    dx,
-                    dy,
-                    now,
-                )
 
         if pending is not None:
             if now > pending.expires_at:
@@ -1150,7 +1159,7 @@ class EdgeRouter:
                             self._pending_arrival = None
                     self.log("handoff", "discarded intent for an unavailable mapping")
                 else:
-                    local_endpoint, _, transport = route
+                    local_endpoint, remote_endpoint, transport = route
                     display_key = (
                         pending.destination.display_key
                         if pending.destination is not None
@@ -1173,6 +1182,8 @@ class EdgeRouter:
                         return self._apply_arrival(
                             event,
                             local_endpoint,
+                            remote_endpoint,
+                            transport,
                             display,
                             pending,
                             dx,
@@ -1353,6 +1364,8 @@ class EdgeRouter:
         self,
         event: Any,
         destination: EdgeEndpoint,
+        source_endpoint: EdgeEndpoint,
+        transport: TransportEdge,
         display: Display,
         pending: PendingArrival,
         dx: float,
@@ -1394,6 +1407,13 @@ class EdgeRouter:
                 destination_edge=destination.edge,
                 point=target,
                 expires_at=now + self._arrival_guard_ms / 1000.0,
+                source_endpoint=(
+                    None if pending.destination is not None else source_endpoint
+                ),
+                destination_endpoint=(
+                    None if pending.destination is not None else destination
+                ),
+                transport=(None if pending.destination is not None else transport),
             )
             self._arrival_latch = (
                 None
@@ -1406,7 +1426,8 @@ class EdgeRouter:
             placement = self._arrival_placement
             peer = self._peer
         Quartz.CGWarpMouseCursorPosition(_cg_point(target))
-        self._schedule_placement_warps(placement)
+        if pending.destination is not None:
+            self._schedule_placement_warps(placement)
         self._outbound.send(
             "/peer/handoff/complete",
             {
@@ -1452,11 +1473,78 @@ class EdgeRouter:
         event: Any,
         placement: ArrivalPlacement,
         display: Display,
+        transport_display: Display | None,
         current: Point,
         dx: float,
         dy: float,
         now: float,
     ) -> Any:
+        if (
+            placement.source_endpoint is not None
+            and placement.destination_endpoint is not None
+        ):
+            # Packets already rewritten toward the hidden UC edge can arrive after
+            # acknowledgement. Pin those; integrate only real post-transfer motion.
+            at_transport = (
+                placement.transport is not None
+                and transport_display is not None
+                and near_edge_segment(
+                    transport_display,
+                    placement.transport.edge,
+                    placement.transport.start,
+                    placement.transport.end,
+                    current,
+                    max(24.0, self._threshold * 6.0),
+                )
+                and (
+                    abs(current.x - placement.point.x) > 96.0
+                    or abs(current.y - placement.point.y) > 96.0
+                )
+            )
+            if at_transport:
+                step_x, step_y = 0.0, 0.0
+                target = placement.point
+            else:
+                step_x, step_y = transform_handoff_delta(
+                    placement.source_endpoint,
+                    placement.destination_endpoint,
+                    dx,
+                    dy,
+                )
+                inset = 2.0
+                target = Point(
+                    min(
+                        display.right - inset,
+                        max(display.x + inset, placement.point.x + step_x),
+                    ),
+                    min(
+                        display.bottom - inset,
+                        max(display.y + inset, placement.point.y + step_y),
+                    ),
+                )
+            Quartz.CGEventSetLocation(event, _cg_point(target))
+            Quartz.CGEventSetIntegerValueField(
+                event, Quartz.kCGMouseEventDeltaX, int(step_x)
+            )
+            Quartz.CGEventSetIntegerValueField(
+                event, Quartz.kCGMouseEventDeltaY, int(step_y)
+            )
+            settled = False
+            with self._lock:
+                placement.point = target
+                placement.rewritten_events += 1
+                self._last_point = target
+                if now >= placement.expires_at and self._arrival_placement is placement:
+                    self._arrival_placement = None
+                    settled = True
+            if settled:
+                count = placement.rewritten_events
+                self.log(
+                    "arrival",
+                    f"edge placement settled after {count} integrated event(s)",
+                )
+            return event
+
         near_virtual_cursor = (
             inside_display(display, current)
             and abs(current.x - placement.point.x) <= 96.0

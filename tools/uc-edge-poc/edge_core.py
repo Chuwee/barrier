@@ -354,6 +354,47 @@ def inward_delta(edge: str, magnitude: float) -> tuple[float, float]:
     return -dx, -dy
 
 
+def transform_handoff_delta(
+    source: EdgeEndpoint,
+    destination: EdgeEndpoint,
+    dx: float,
+    dy: float,
+) -> tuple[float, float]:
+    """Rotate source-edge motion into the destination edge's coordinate basis."""
+    outward_normals = {
+        "left": (-1.0, 0.0),
+        "right": (1.0, 0.0),
+        "top": (0.0, -1.0),
+        "bottom": (0.0, 1.0),
+    }
+    inward_normals = {
+        edge: (-x, -y) for edge, (x, y) in outward_normals.items()
+    }
+    tangents = {
+        "left": (0.0, 1.0),
+        "right": (0.0, 1.0),
+        "top": (1.0, 0.0),
+        "bottom": (1.0, 0.0),
+    }
+    source_normal = outward_normals[source.edge]
+    source_tangent = tangents[source.edge]
+    destination_normal = inward_normals[destination.edge]
+    destination_tangent = tangents[destination.edge]
+    normal_amount = dx * source_normal[0] + dy * source_normal[1]
+    tangent_amount = dx * source_tangent[0] + dy * source_tangent[1]
+    orientation = (
+        1.0
+        if (source.end - source.start) * (destination.end - destination.start) > 0
+        else -1.0
+    )
+    return (
+        normal_amount * destination_normal[0]
+        + tangent_amount * orientation * destination_tangent[0],
+        normal_amount * destination_normal[1]
+        + tangent_amount * orientation * destination_tangent[1],
+    )
+
+
 def span_fraction(display: Display, edge: str, point: Point) -> float:
     if edge in ("left", "right"):
         return 100.0 * (point.y - display.y) / max(display.height, 1.0)
