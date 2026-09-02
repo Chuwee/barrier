@@ -57,7 +57,7 @@ MOUSE_EVENT_TYPES = (
 )
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 9
+AGENT_SCHEMA_VERSION = 8
 
 
 @dataclass
@@ -83,7 +83,12 @@ class PendingArrival:
 
 @dataclass
 class ArrivalPlacement:
+    display_key: str
+    destination_edge: str
     point: Point
+    expires_at: float
+    rewritten_events: int = 0
+    forced_warps: int = 0
 
 
 @dataclass(frozen=True)
@@ -195,8 +200,6 @@ class EdgeRouter:
             self._arrival_guard_ms = 1200
         if state_version < 6 and self._arrival_guard_ms == 1200:
             self._arrival_guard_ms = 220
-        if state_version < 7 and self._arrival_guard_ms == 220:
-            self._arrival_guard_ms = 80
 
         self._display_cache = list_displays()
         peer_value = persisted.get("peer")
@@ -251,7 +254,7 @@ class EdgeRouter:
 
     def _save_locked(self) -> None:
         value = {
-            "version": 7,
+            "version": 6,
             "node_id": self._node_id,
             "node_name": self._node_name,
             "node_token": self._node_token,
@@ -783,7 +786,7 @@ class EdgeRouter:
             return event
 
         displays = {display.key: display for display in self.displays(refresh=False)}
-        if arrival_latch is not None and placement is None:
+        if arrival_latch is not None:
             latched_display = displays.get(arrival_latch.display_key)
             if latched_display is None:
                 with self._lock:
@@ -800,6 +803,23 @@ class EdgeRouter:
                         self._arrival_latch = None
                 self.log("arrival", "destination edge released after inward movement")
                 arrival_latch = None
+
+        if placement is not None:
+            display = displays.get(placement.display_key)
+            if display is None:
+                with self._lock:
+                    if self._arrival_placement is placement:
+                        self._arrival_placement = None
+            else:
+                return self._apply_placement_event(
+                    event,
+                    placement,
+                    display,
+                    current,
+                    dx,
+                    dy,
+                    now,
+                )
 
         if pending is not None:
             if now > pending.expires_at:
@@ -1046,7 +1066,10 @@ class EdgeRouter:
             self._last_point = target
             self._cooldown_until = now + self._arrival_guard_ms / 1000.0
             self._arrival_placement = ArrivalPlacement(
+                display_key=display.key,
+                destination_edge=destination.edge,
                 point=target,
+                expires_at=now + self._arrival_guard_ms / 1000.0,
             )
             self._arrival_latch = ArrivalLatch(
                 display_key=display.key,
@@ -1054,7 +1077,8 @@ class EdgeRouter:
             )
             placement = self._arrival_placement
             peer = self._peer
-        self._schedule_final_placement(placement)
+        Quartz.CGWarpMouseCursorPosition(_cg_point(target))
+        self._schedule_placement_warps(placement)
         self._outbound.send(
             "/peer/handoff/complete",
             {
@@ -1073,26 +1097,64 @@ class EdgeRouter:
         )
         return event
 
-    def _schedule_final_placement(self, placement: ArrivalPlacement) -> None:
-        # Let Universal Control finish its own transport-edge warp, then override
-        # it once and immediately restore physical mouse/cursor association.
-        timer = threading.Timer(
-            self._arrival_guard_ms / 1000.0,
-            self._finish_arrival_placement,
-            (placement,),
-        )
-        timer.daemon = True
-        timer.start()
+    def _schedule_placement_warps(self, placement: ArrivalPlacement) -> None:
+        # Universal Control can overwrite the event-tap location after returning
+        # from the callback, so reinforce the logical destination while it settles.
+        for delay in (0.03, 0.08, 0.16):
+            timer = threading.Timer(delay, self._warp_active_placement, (placement,))
+            timer.daemon = True
+            timer.start()
 
-    def _finish_arrival_placement(self, placement: ArrivalPlacement) -> None:
+    def _warp_active_placement(self, placement: ArrivalPlacement) -> None:
         with self._lock:
             if self._arrival_placement is not placement or not self._armed:
                 return
             point = placement.point
-            self._arrival_placement = None
+            placement.forced_warps += 1
             self._last_point = point
         Quartz.CGWarpMouseCursorPosition(_cg_point(point))
-        Quartz.CGAssociateMouseAndMouseCursorPosition(True)
+
+    def _apply_placement_event(
+        self,
+        event: Any,
+        placement: ArrivalPlacement,
+        display: Display,
+        current: Point,
+        dx: float,
+        dy: float,
+        now: float,
+    ) -> Any:
+        near_virtual_cursor = (
+            inside_display(display, current)
+            and abs(current.x - placement.point.x) <= 96.0
+            and abs(current.y - placement.point.y) <= 96.0
+        )
+        if near_virtual_cursor:
+            placement.point = current
+            if now >= placement.expires_at:
+                with self._lock:
+                    if self._arrival_placement is placement:
+                        self._arrival_placement = None
+            return event
+
+        magnitude = max(abs(dx), abs(dy), 1.0)
+        step_x, step_y = inward_delta(placement.destination_edge, magnitude)
+        inset = 2.0
+        target = Point(
+            min(display.right - inset, max(display.x + inset, placement.point.x + step_x)),
+            min(display.bottom - inset, max(display.y + inset, placement.point.y + step_y)),
+        )
+        Quartz.CGEventSetLocation(event, _cg_point(target))
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, int(step_x))
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, int(step_y))
+        Quartz.CGWarpMouseCursorPosition(_cg_point(target))
+        with self._lock:
+            placement.point = target
+            placement.rewritten_events += 1
+            self._last_point = target
+            if now >= placement.expires_at and self._arrival_placement is placement:
+                self._arrival_placement = None
+        return event
 
     def close(self) -> None:
         self._closing.set()

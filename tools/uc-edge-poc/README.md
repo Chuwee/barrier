@@ -62,9 +62,9 @@ acknowledges the transfer to the source agent. If Apple does not complete the
 transfer, Edge Lab restores the pre-handoff cursor position instead of leaving
 the pointer exposed on the hidden transport edge.
 
-After a confirmed transfer, Edge Lab waits 80 ms for Apple's transport warp,
-places the cursor once, and immediately reassociates physical mouse movement.
-This prevents both transport-edge overwrite and post-switch cursor capture.
+After a confirmed transfer, a 220 ms settling guard keeps any in-flight UC
+transport events on the logical destination. This prevents Apple's physical
+edge from immediately pulling the cursor back to the hidden transport edge.
 The hidden edge also receives a bounded movement boost so Universal Control's
 push-through threshold is reached without requiring a long physical push.
 An arrived edge remains latched until the cursor moves inward, preventing the
