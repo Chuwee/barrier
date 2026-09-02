@@ -1380,7 +1380,9 @@ class EdgeRouter:
             self._transport_min_delta,
             self._transport_max_delta,
         )
-        dx, dy = target_delta(redirect.transport.edge, magnitude)
+        # Feed the redirect in logical-edge coordinates. The event callback then
+        # rotates it onto the hidden physical transport edge exactly once.
+        dx, dy = target_delta(redirect.source_edge, magnitude)
         event = Quartz.CGEventCreateMouseEvent(
             None,
             Quartz.kCGEventMouseMoved,
