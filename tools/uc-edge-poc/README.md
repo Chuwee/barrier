@@ -12,6 +12,8 @@ The paired version supports:
 - Bidirectional logical edge mappings.
 - Directed fractional ranges such as `20 -> 80%` mapped to `100 -> 0%`.
 - Proportional cursor placement across displays with different sizes.
+- Direct manipulation of display edges with draggable range handles and live
+  overlap conflict feedback.
 - Separate hidden Universal Control transport ranges for each direction.
 - A unified web topology that visualizes logical and transport edges.
 - Persistent pairing, mappings, and armed state.
@@ -43,8 +45,9 @@ restarting the process after granting permissions.
 1. Keep Edge Lab running on both Macs.
 2. On one Mac, enter the other Mac's `.local` address, peer port, and six-digit
    code shown in its UI.
-3. Create a mapping between a fractional edge on this Mac and one on the paired
-   Mac. The mapping is automatically bidirectional.
+3. Click an edge on each Mac in the topology. Drag either endpoint handle to
+   resize its fractional range, or drag the highlighted segment to move it. The
+   mapping is automatically bidirectional.
 4. Expand **Universal Control transport edges** and select the real edge that
    currently enters the other Mac in Apple's arrangement. Configure the reverse
    transport on the paired Mac the same way.
@@ -55,7 +58,9 @@ restarting the process after granting permissions.
 
 Ranges are directed. `0 -> 100%` preserves orientation while `100 -> 0%` flips
 it. Mapping `25 -> 75%` to `0 -> 100%` expands the middle half of one edge over
-the full destination edge.
+the full destination edge. Existing occupied ranges remain visible; an invalid
+overlap turns the draft red and cannot be saved. Disabled mappings do not
+reserve their edge ranges.
 
 ## Start at login
 

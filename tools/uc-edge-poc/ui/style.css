@@ -8,6 +8,7 @@
   --mint: #16765b;
   --mint-soft: #bfe3d4;
   --blue: #315a6b;
+  --draft: #246d91;
   --muted: #6b7068;
   --danger: #a52f25;
 }
@@ -50,7 +51,8 @@ section { border: 1px solid var(--line); background: color-mix(in srgb, var(--ca
 .legend i { width: 25px; display: inline-block; vertical-align: middle; margin-right: 5px; border-top: 4px solid; }
 .legend .logical { border-color: var(--hot); }
 .legend .transport { border-color: var(--mint); border-top-style: dashed; }
-#topology { display: block; width: 100%; min-height: 320px; border: 1px dashed #a9a08e; border-radius: 16px; background: #dad3c2; }
+.topology-help { margin: -2px 0 12px; color: var(--muted); font-size: 12px; }
+#topology { display: block; width: 100%; min-height: 320px; border: 1px dashed #a9a08e; border-radius: 16px; background: #dad3c2; touch-action: none; user-select: none; }
 .empty { display: none; place-items: center; min-height: 250px; color: var(--muted); border: 1px dashed var(--line); border-radius: 16px; }
 .host-zone { fill: #f6f0e2; stroke: #b6ad99; stroke-width: 1; }
 .host-title { fill: var(--ink); font: 800 15px "Avenir Next", sans-serif; }
@@ -59,10 +61,27 @@ section { border: 1px solid var(--line); background: color-mix(in srgb, var(--ca
 .display-label { fill: var(--ink); font: 700 12px "SF Mono", monospace; pointer-events: none; }
 .display-size { fill: var(--muted); font: 10px "SF Mono", monospace; pointer-events: none; }
 .map-segment { stroke: var(--hot); stroke-width: 9; stroke-linecap: round; }
-.transport-segment { stroke: var(--mint); stroke-width: 6; stroke-dasharray: 8 5; stroke-linecap: round; }
+.transport-segment { stroke: var(--mint); stroke-width: 6; stroke-dasharray: 8 5; stroke-linecap: round; pointer-events: none; }
 .map-curve { fill: none; stroke: var(--hot); stroke-width: 3; opacity: .8; }
 .map-dot { fill: var(--hot); }
 .map-label { fill: var(--hot); font: 800 11px "SF Mono", monospace; paint-order: stroke; stroke: #f6f0e2; stroke-width: 4px; }
+.edge-hit { stroke: transparent; stroke-width: 20; fill: none; cursor: crosshair; pointer-events: stroke; }
+.edge-hit:hover { stroke: #246d9126; }
+.selected-edge { stroke: #246d9140; stroke-width: 13; stroke-linecap: round; pointer-events: none; }
+.draft-segment { stroke: var(--draft); stroke-width: 9; stroke-linecap: round; cursor: grab; pointer-events: stroke; }
+.draft-segment:active { cursor: grabbing; }
+.draft-curve { fill: none; stroke: var(--draft); stroke-width: 4; stroke-dasharray: 10 5; pointer-events: none; }
+.draft-handle { fill: #fffdf7; stroke: var(--draft); stroke-width: 4; cursor: ew-resize; }
+.draft-handle.vertical { cursor: ns-resize; }
+.draft-handle.start { fill: var(--draft); }
+.handle-label { fill: var(--draft); font: 800 11px "SF Mono", monospace; paint-order: stroke; stroke: #f6f0e2; stroke-width: 4px; pointer-events: none; }
+.draft-segment.conflict, .draft-curve.conflict { stroke: var(--danger); }
+.draft-handle.conflict { stroke: var(--danger); }
+.draft-handle.start.conflict { fill: var(--danger); }
+.handle-label.conflict { fill: var(--danger); }
+.draft-transport { opacity: .7; }
+.overlap-status { margin-top: 10px; min-height: 20px; color: var(--draft); font: 750 12px/1.45 "SF Mono", monospace; }
+.overlap-status.conflict { color: var(--danger); }
 
 .work-grid { display: grid; grid-template-columns: minmax(0, 2.3fr) minmax(250px, .7fr); gap: 16px; margin-top: 16px; }
 .editor-card, .routing-card, .connections-card, .events-card { padding: 22px; }

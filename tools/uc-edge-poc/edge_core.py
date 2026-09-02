@@ -356,13 +356,14 @@ def validate_connections(
             if transport.display_key not in displays:
                 raise ValueError(f"{label} transport references a disconnected display")
 
-            low, high = sorted((endpoint.start, endpoint.end))
-            key = (endpoint.host_id, endpoint.display_key, endpoint.edge)
-            for other_low, other_high, other_name in occupied.setdefault(key, []):
-                if max(low, other_low) < min(high, other_high):
-                    raise ValueError(
-                        f"{connection.name} overlaps {other_name} on the same source edge"
-                    )
-            occupied[key].append((low, high, connection.name))
+            if connection.enabled:
+                low, high = sorted((endpoint.start, endpoint.end))
+                key = (endpoint.host_id, endpoint.display_key, endpoint.edge)
+                for other_low, other_high, other_name in occupied.setdefault(key, []):
+                    if max(low, other_low) < min(high, other_high):
+                        raise ValueError(
+                            f"{connection.name} overlaps {other_name} on the same source edge"
+                        )
+                occupied[key].append((low, high, connection.name))
 
     return result

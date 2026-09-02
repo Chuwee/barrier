@@ -5,6 +5,8 @@ const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"
 let state = null;
 let editId = null;
 let formSignature = "";
+let topologyLayouts = new Map();
+let dragState = null;
 
 async function api(path, body) {
   const options = body === undefined ? {} : {
@@ -160,6 +162,67 @@ function drawSegment(rect, endpoint, className) {
   return `<line class="${className}" x1="${points[0].x}" y1="${points[0].y}" x2="${points[1].x}" y2="${points[1].y}"/>`;
 }
 
+function rangesOverlap(first, second) {
+  const firstLow = Math.min(first.start, first.end), firstHigh = Math.max(first.start, first.end);
+  const secondLow = Math.min(second.start, second.end), secondHigh = Math.max(second.start, second.end);
+  return Math.max(firstLow, secondLow) < Math.min(firstHigh, secondHigh);
+}
+
+function conflictsForDraft(draft) {
+  const conflicts = new Set();
+  for (const [prefix, endpoint] of [["a", draft.a], ["b", draft.b]]) {
+    if (endpoint.start === endpoint.end) conflicts.add(prefix);
+    if (!draft.enabled) continue;
+    for (const connection of state.connections) {
+      if (connection.id === editId || !connection.enabled) continue;
+      for (const occupied of [connection.a, connection.b]) {
+        if (
+          endpoint.host_id === occupied.host_id &&
+          endpoint.display_key === occupied.display_key &&
+          endpoint.edge === occupied.edge &&
+          rangesOverlap(endpoint, occupied)
+        ) conflicts.add(prefix);
+      }
+    }
+  }
+  return conflicts;
+}
+
+function edgeHits(host, layout, prefix) {
+  let html = "";
+  for (const display of host.displays || []) {
+    const rect = layout.rects.get(display.key);
+    if (!rect) continue;
+    for (const edge of EDGES) {
+      const points = segment(rect, edge, 0, 100);
+      html += `<line class="edge-hit" data-prefix="${prefix}" data-display="${esc(display.key)}" data-edge="${edge}" x1="${points[0].x}" y1="${points[0].y}" x2="${points[1].x}" y2="${points[1].y}"/>`;
+    }
+  }
+  return html;
+}
+
+function draftEndpoint(rect, endpoint, prefix, conflict) {
+  if (!rect) return "";
+  const points = segment(rect, endpoint.edge, endpoint.start, endpoint.end);
+  const vertical = endpoint.edge === "left" || endpoint.edge === "right";
+  const labelOffset = endpoint.edge === "left" ? -13 : endpoint.edge === "right" ? 13 : 0;
+  const labelY = endpoint.edge === "top" ? -13 : endpoint.edge === "bottom" ? 18 : 4;
+  const conflictClass = conflict ? " conflict" : "";
+  const orientationClass = vertical ? " vertical" : "";
+  return [
+    `<line id="draft-${prefix}-segment" class="draft-segment${conflictClass}" data-prefix="${prefix}" data-mode="range" x1="${points[0].x}" y1="${points[0].y}" x2="${points[1].x}" y2="${points[1].y}"/>`,
+    `<circle class="draft-handle start${orientationClass}${conflictClass}" data-prefix="${prefix}" data-mode="start" cx="${points[0].x}" cy="${points[0].y}" r="8"/>`,
+    `<circle class="draft-handle${orientationClass}${conflictClass}" data-prefix="${prefix}" data-mode="end" cx="${points[1].x}" cy="${points[1].y}" r="8"/>`,
+    `<text class="handle-label${conflictClass}" text-anchor="middle" x="${points[0].x + labelOffset}" y="${points[0].y + labelY}">${Number(endpoint.start).toFixed(0)}%</text>`,
+    `<text class="handle-label${conflictClass}" text-anchor="middle" x="${points[1].x + labelOffset}" y="${points[1].y + labelY}">${Number(endpoint.end).toFixed(0)}%</text>`,
+  ].join("");
+}
+
+function draftValue() {
+  if (!state.peer || !$('a-display').value || !$('b-display').value) return null;
+  return formConnection(editId || "draft-preview");
+}
+
 function renderTopology() {
   const svg = $("topology");
   const empty = $("topology-empty");
@@ -174,9 +237,11 @@ function renderTopology() {
   const left = hostLayout(state.local, 20, 20, 550, 430);
   const right = hostLayout(remote, 630, 20, 550, 430);
   const layouts = new Map([[state.local.id, left], [remote.id, right]]);
+  topologyLayouts = layouts;
   let routes = "";
   let transports = "";
   for (const connection of state.connections) {
+    if (connection.id === editId) continue;
     const aLayout = layouts.get(connection.a.host_id);
     const bLayout = layouts.get(connection.b.host_id);
     const aRect = aLayout?.rects.get(connection.a.display_key);
@@ -195,7 +260,127 @@ function renderTopology() {
     transports += drawSegment(atLayout?.rects.get(connection.a_transport.display_key), connection.a_transport, "transport-segment");
     transports += drawSegment(btLayout?.rects.get(connection.b_transport.display_key), connection.b_transport, "transport-segment");
   }
-  svg.innerHTML = left.svg + right.svg + transports + routes;
+  const draft = draftValue();
+  let draftHtml = "";
+  if (draft) {
+    const conflicts = conflictsForDraft(draft);
+    const aRect = layouts.get(draft.a.host_id)?.rects.get(draft.a.display_key);
+    const bRect = layouts.get(draft.b.host_id)?.rects.get(draft.b.display_key);
+    const aPoints = aRect ? segment(aRect, draft.a.edge, draft.a.start, draft.a.end) : null;
+    const bPoints = bRect ? segment(bRect, draft.b.edge, draft.b.start, draft.b.end) : null;
+    draftHtml += drawSegment(aRect, {...draft.a, start: 0, end: 100}, "selected-edge");
+    draftHtml += drawSegment(bRect, {...draft.b, start: 0, end: 100}, "selected-edge");
+    draftHtml += drawSegment(layouts.get(draft.a.host_id)?.rects.get(draft.a_transport.display_key), draft.a_transport, "transport-segment draft-transport");
+    draftHtml += drawSegment(layouts.get(draft.b.host_id)?.rects.get(draft.b_transport.display_key), draft.b_transport, "transport-segment draft-transport");
+    if (aPoints && bPoints) {
+      const a = midpoint(aPoints), b = midpoint(bPoints);
+      const bend = Math.max(55, Math.abs(b.x - a.x) * .35);
+      const conflictClass = conflicts.size ? " conflict" : "";
+      draftHtml += `<path class="draft-curve${conflictClass}" d="M ${a.x} ${a.y} C ${a.x + bend} ${a.y}, ${b.x - bend} ${b.y}, ${b.x} ${b.y}"/>`;
+    }
+    draftHtml += draftEndpoint(aRect, draft.a, "a", conflicts.has("a"));
+    draftHtml += draftEndpoint(bRect, draft.b, "b", conflicts.has("b"));
+    const status = $("overlap-status");
+    status.className = `overlap-status${conflicts.size ? " conflict" : ""}`;
+    status.textContent = conflicts.size
+      ? `Invalid or overlapping range on ${[...conflicts].map((side) => side === "a" ? state.local.name : state.peer.name).join(" and ")}. Move or resize the red range.`
+      : `${draft.a.start}→${draft.a.end}% maps proportionally to ${draft.b.start}→${draft.b.end}%.`;
+  }
+  const hits = edgeHits(state.local, left, "a") + edgeHits(remote, right, "b");
+  svg.innerHTML = left.svg + right.svg + transports + routes + hits + draftHtml;
+  bindTopologyTargets();
+}
+
+function svgPoint(event) {
+  const svg = $("topology");
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  return point.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+function percentageAt(rect, edge, point) {
+  const value = edge === "left" || edge === "right"
+    ? 100 * (point.y - rect.y) / rect.height
+    : 100 * (point.x - rect.x) / rect.width;
+  return Math.round(Math.max(0, Math.min(100, value)) * 10) / 10;
+}
+
+function rectForPrefix(prefix) {
+  const hostId = prefix === "a" ? state.local.id : state.peer.id;
+  return topologyLayouts.get(hostId)?.rects.get($(`${prefix}-display`).value);
+}
+
+function bindTopologyTargets() {
+  const svg = $("topology");
+  svg.querySelectorAll(".edge-hit").forEach((target) => {
+    target.onpointerdown = (event) => {
+      const prefix = target.dataset.prefix;
+      field(`${prefix}-display`, target.dataset.display);
+      field(`${prefix}-edge`, target.dataset.edge);
+      const hostId = prefix === "a" ? state.local.id : state.peer.id;
+      const rect = topologyLayouts.get(hostId)?.rects.get(target.dataset.display);
+      if (rect) {
+        const center = percentageAt(rect, target.dataset.edge, svgPoint(event));
+        const oldStart = Number($(`${prefix}-start`).value);
+        const oldEnd = Number($(`${prefix}-end`).value);
+        const direction = oldEnd >= oldStart ? 1 : -1;
+        const width = Math.min(100, Math.max(10, Math.abs(oldEnd - oldStart)));
+        let low = Math.max(0, Math.min(100 - width, center - width / 2));
+        let high = low + width;
+        field(`${prefix}-start`, direction > 0 ? low : high);
+        field(`${prefix}-end`, direction > 0 ? high : low);
+      }
+      message("editor-message", `${prefix === "a" ? state.local.name : state.peer.name} edge selected. Drag its handles to set overlap.`);
+      renderTopology();
+      event.preventDefault();
+    };
+  });
+  svg.querySelectorAll(".draft-handle, .draft-segment").forEach((target) => {
+    target.onpointerdown = (event) => {
+      const prefix = target.dataset.prefix;
+      const rect = rectForPrefix(prefix);
+      if (!rect) return;
+      dragState = {
+        pointerId: event.pointerId,
+        prefix,
+        mode: target.dataset.mode,
+        rect,
+        edge: $(`${prefix}-edge`).value,
+        pointerStart: percentageAt(rect, $(`${prefix}-edge`).value, svgPoint(event)),
+        start: Number($(`${prefix}-start`).value),
+        end: Number($(`${prefix}-end`).value),
+      };
+      svg.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+    };
+  });
+}
+
+function moveDraft(event) {
+  if (!dragState || event.pointerId !== dragState.pointerId) return;
+  const current = percentageAt(dragState.rect, dragState.edge, svgPoint(event));
+  if (dragState.mode === "start" || dragState.mode === "end") {
+    field(`${dragState.prefix}-${dragState.mode}`, current);
+  } else {
+    let start = dragState.start + current - dragState.pointerStart;
+    let end = dragState.end + current - dragState.pointerStart;
+    const low = Math.min(start, end), high = Math.max(start, end);
+    if (low < 0) { start -= low; end -= low; }
+    if (high > 100) { start -= high - 100; end -= high - 100; }
+    field(`${dragState.prefix}-start`, Math.round(start * 10) / 10);
+    field(`${dragState.prefix}-end`, Math.round(end * 10) / 10);
+  }
+  renderTopology();
+}
+
+function finishDraftMove(event) {
+  if (!dragState || event.pointerId !== dragState.pointerId) return;
+  const svg = $("topology");
+  if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+  dragState = null;
+  renderTopology();
 }
 
 function orientedConnection(connection) {
@@ -237,7 +422,7 @@ function render(next) {
   renderStatus();
   renderPairPanel();
   initializeFormOptions();
-  renderTopology();
+  if (!dragState) renderTopology();
   renderConnections();
   renderEvents();
 }
@@ -265,6 +450,7 @@ function editConnection(id) {
     field(`${prefix}-start`, endpoint.start);
     field(`${prefix}-end`, endpoint.end);
   }
+  renderTopology();
   $("editor-title").scrollIntoView({behavior: "smooth", block: "center"});
 }
 
@@ -277,6 +463,7 @@ function clearEditor() {
   for (const prefix of ["at", "bt"]) { field(`${prefix}-start`, 25); field(`${prefix}-end`, 75); }
   field("at-edge", "right"); field("bt-edge", "left");
   message("editor-message", "");
+  renderTopology();
 }
 
 function endpoint(prefix, hostId) {
@@ -298,22 +485,26 @@ function transport(prefix) {
   };
 }
 
-function formConnection() {
+function formConnection(id = editId || "draft-preview") {
   if (!state.peer) throw new Error("Pair the other Mac first");
+  const existing = editId ? state.connections.find((connection) => connection.id === editId) : null;
   return {
-    id: editId || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`),
+    id,
     name: $("mapping-name").value.trim() || "Edge mapping",
     a: endpoint("a", state.local.id),
     b: endpoint("b", state.peer.id),
     a_transport: transport("at"),
     b_transport: transport("bt"),
-    enabled: true,
+    enabled: existing?.enabled ?? true,
   };
 }
 
 async function saveMapping() {
   try {
-    const connection = formConnection();
+    const id = editId || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+    const connection = formConnection(id);
+    const conflicts = conflictsForDraft(connection);
+    if (conflicts.size) throw new Error("A range is empty or overlaps an existing mapping. Adjust the red handles first.");
     const connections = editId ? state.connections.map((item) => item.id === editId ? connection : item) : [...state.connections, connection];
     await api("/api/connections", {connections});
     message("editor-message", "Mapping saved and synchronized.");
@@ -358,6 +549,12 @@ $("activate").onclick = () => routing("/api/routing/activate", "Routing activati
 $("stop").onclick = () => routing("/api/routing/stop", "Routing stopped on both Macs.");
 $("restore").onclick = () => routing("/api/restore", "Emergency stop requested.");
 $("permissions").onclick = () => routing("/api/access/request", "Permission request sent on this Mac.");
+$("topology").addEventListener("pointermove", moveDraft);
+$("topology").addEventListener("pointerup", finishDraftMove);
+$("topology").addEventListener("pointercancel", finishDraftMove);
+for (const id of ["a-display", "a-edge", "a-start", "a-end", "b-display", "b-edge", "b-start", "b-end", "at-display", "at-edge", "at-start", "at-end", "bt-display", "bt-edge", "bt-start", "bt-end"]) {
+  $(id).addEventListener("input", () => state?.peer && renderTopology());
+}
 window.addEventListener("resize", () => state && renderTopology());
 setInterval(refresh, 1000);
 refresh();

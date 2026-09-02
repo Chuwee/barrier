@@ -166,6 +166,15 @@ class TopologyTests(unittest.TestCase):
                 [self.host_a, self.host_b],
             )
 
+    def test_disabled_mapping_does_not_reserve_edge_range(self) -> None:
+        disabled = replace(self.connection(), enabled=False)
+        overlapping = self.connection("two", 40, 60)
+        result = validate_connections(
+            [disabled, overlapping],
+            [self.host_a, self.host_b],
+        )
+        self.assertEqual(len(result), 2)
+
     def test_rejects_unknown_display(self) -> None:
         connection = self.connection()
         broken = replace(
