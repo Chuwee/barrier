@@ -1,0 +1,12 @@
+[project]
+name = "uc-edge-poc"
+version = "0.2.0"
+description = "Paired Universal Control virtual edge router proof of concept"
+requires-python = ">=3.11"
+dependencies = [
+    "pyobjc-framework-Cocoa>=11.1",
+    "pyobjc-framework-Quartz>=11.1",
+]
+
+[tool.uv]
+package = false

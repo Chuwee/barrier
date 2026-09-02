@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UC Edge Lab</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <div class="kicker">Universal Control geometry layer</div>
+        <h1>Edge Lab</h1>
+        <p class="lede">Arrange the edges Apple will not. Universal Control remains the transport.</p>
+      </div>
+      <div id="status" class="status"></div>
+    </header>
+
+    <section class="pair-card">
+      <div>
+        <span class="eyebrow">This Mac</span>
+        <h2 id="local-name">Loading...</h2>
+        <p class="muted">Pair code <strong id="pair-code" class="code">------</strong></p>
+        <p id="listen-addresses" class="mono muted"></p>
+      </div>
+      <div id="peer-panel" class="peer-panel"></div>
+    </section>
+
+    <section class="topology-card">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Virtual topology</span>
+          <h2>Fractional edge map</h2>
+        </div>
+        <div class="legend">
+          <span><i class="logical"></i> Logical handoff</span>
+          <span><i class="transport"></i> Hidden UC transport</span>
+        </div>
+      </div>
+      <div id="topology-empty" class="empty">Pair the second Mac to load its displays.</div>
+      <svg id="topology" viewBox="0 0 1200 470" role="img" aria-label="Cross-Mac edge topology"></svg>
+    </section>
+
+    <div class="work-grid">
+      <section class="editor-card">
+        <div class="section-head compact">
+          <div><span class="eyebrow">Mapping editor</span><h2 id="editor-title">New bidirectional mapping</h2></div>
+          <button id="clear-edit" class="text-button" type="button">Clear</button>
+        </div>
+        <label class="wide">Name<input id="mapping-name" value="Primary handoff" maxlength="60"></label>
+
+        <div class="endpoint-grid">
+          <fieldset>
+            <legend id="a-host-label">This Mac</legend>
+            <label>Display<select id="a-display"></select></label>
+            <div class="row-3">
+              <label>Edge<select id="a-edge"></select></label>
+              <label>From %<input id="a-start" type="number" min="0" max="100" value="0"></label>
+              <label>To %<input id="a-end" type="number" min="0" max="100" value="100"></label>
+            </div>
+          </fieldset>
+          <div class="scale-mark"><span>⇄</span><small>proportional</small></div>
+          <fieldset>
+            <legend id="b-host-label">Remote Mac</legend>
+            <label>Display<select id="b-display"></select></label>
+            <div class="row-3">
+              <label>Edge<select id="b-edge"></select></label>
+              <label>From %<input id="b-start" type="number" min="0" max="100" value="0"></label>
+              <label>To %<input id="b-end" type="number" min="0" max="100" value="100"></label>
+            </div>
+          </fieldset>
+        </div>
+        <p class="callout">Ranges are directed. Use <strong>100 → 0</strong> to flip orientation, or <strong>25 → 75</strong> to map only the middle half.</p>
+
+        <details>
+          <summary>Universal Control transport edges</summary>
+          <p class="muted">Choose the real Apple-configured exit edge on each Mac. These ranges are hidden from the logical topology.</p>
+          <div class="transport-grid">
+            <fieldset>
+              <legend id="a-transport-label">This Mac transport</legend>
+              <label>Display<select id="at-display"></select></label>
+              <div class="row-3"><label>Edge<select id="at-edge"></select></label><label>From %<input id="at-start" type="number" min="0" max="100" value="25"></label><label>To %<input id="at-end" type="number" min="0" max="100" value="75"></label></div>
+            </fieldset>
+            <fieldset>
+              <legend id="b-transport-label">Remote transport</legend>
+              <label>Display<select id="bt-display"></select></label>
+              <div class="row-3"><label>Edge<select id="bt-edge"></select></label><label>From %<input id="bt-start" type="number" min="0" max="100" value="25"></label><label>To %<input id="bt-end" type="number" min="0" max="100" value="75"></label></div>
+            </fieldset>
+          </div>
+        </details>
+        <div class="actions">
+          <button id="save-mapping" type="button">Save bidirectional mapping</button>
+          <span id="editor-message" class="message"></span>
+        </div>
+      </section>
+
+      <section class="routing-card">
+        <span class="eyebrow">Runtime</span>
+        <h2>Transparent routing</h2>
+        <p class="muted">Activation starts the event tap on both paired Macs. Saved routing is restored at launch.</p>
+        <div class="actions vertical">
+          <button id="activate" type="button">Activate on both Macs</button>
+          <button id="stop" class="secondary" type="button">Stop routing</button>
+          <button id="restore" class="danger" type="button">Emergency stop + restore</button>
+          <button id="permissions" class="text-button" type="button">Request macOS permissions</button>
+        </div>
+        <div id="runtime-message" class="message"></div>
+      </section>
+    </div>
+
+    <section class="connections-card">
+      <div class="section-head compact"><div><span class="eyebrow">Compiled routes</span><h2>Edge mappings</h2></div><span id="connection-count" class="count">0</span></div>
+      <div id="connections" class="connection-list"></div>
+    </section>
+
+    <section class="events-card">
+      <div class="section-head compact"><div><span class="eyebrow">Diagnostics</span><h2>Live events</h2></div></div>
+      <div id="events" class="event-log"></div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
