@@ -1,6 +1,8 @@
+import threading
 import time
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 from edge_core import (
     Display,
@@ -29,7 +31,7 @@ from edge_core import (
     validate_directional_navigation,
     validate_keyboard_switch,
 )
-from peer_transport import PeerRecord
+from peer_transport import OutboundWorker, PeerRecord
 
 
 DISPLAY = Display(
@@ -409,6 +411,51 @@ class PeerRecordTests(unittest.TestCase):
         self.assertTrue(updated.tap_running)
         self.assertEqual(updated.tap_level, "HID")
         self.assertTrue(updated.listen_access)
+
+
+class OutboundWorkerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.peer = PeerRecord(
+            id="mac-b",
+            name="iMac",
+            address="imac.local",
+            port=8766,
+            token="secret-token",
+            connected=True,
+        )
+
+    def test_completion_runs_after_peer_acknowledges(self) -> None:
+        completed = threading.Event()
+        errors: list[RuntimeError | None] = []
+        worker = OutboundWorker(lambda: self.peer, self.fail)
+        with patch("peer_transport.request_json", return_value={"ok": True}):
+            worker.send(
+                "/peer/handoff",
+                {"handoff_id": "one"},
+                lambda error: (errors.append(error), completed.set()),
+            )
+            self.assertTrue(completed.wait(1.0))
+        worker.close()
+        self.assertEqual(errors, [None])
+
+    def test_completion_receives_transport_failure(self) -> None:
+        completed = threading.Event()
+        errors: list[RuntimeError | None] = []
+        messages: list[str] = []
+        worker = OutboundWorker(lambda: self.peer, messages.append)
+        with patch(
+            "peer_transport.request_json",
+            side_effect=RuntimeError("offline"),
+        ):
+            worker.send(
+                "/peer/handoff",
+                {"handoff_id": "one"},
+                lambda error: (errors.append(error), completed.set()),
+            )
+            self.assertTrue(completed.wait(1.0))
+        worker.close()
+        self.assertEqual(str(errors[0]), "offline")
+        self.assertEqual(messages, ["offline"])
 
 
 if __name__ == "__main__":

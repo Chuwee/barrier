@@ -80,7 +80,7 @@ ARROW_KEY_DIRECTIONS = {
 }
 UI_DIR = Path(__file__).with_name("ui")
 DEFAULT_STATE_PATH = Path.home() / ".uc-edge-lab" / "state.json"
-AGENT_SCHEMA_VERSION = 11
+AGENT_SCHEMA_VERSION = 12
 
 
 @dataclass
@@ -94,6 +94,7 @@ class RedirectState:
     restore_point: Point
     event_count: int = 0
     hotkey: bool = False
+    ready: bool = False
 
 
 @dataclass
@@ -1244,7 +1245,8 @@ class EdgeRouter:
             self._redirect = redirect
             self._pending_arrival = None
             self._last_restore_point = restore_point
-        self._outbound.send(
+        self._send_handoff_intent(
+            redirect,
             "/peer/handoff",
             {
                 "handoff_id": redirect.handoff_id,
@@ -1269,8 +1271,44 @@ class EdgeRouter:
         )
         timeout_timer.daemon = True
         timeout_timer.start()
-        for delay in (0.0, 0.012, 0.024, 0.038, 0.054, 0.072, 0.094, 0.12, 0.15):
-            timer = threading.Timer(delay, self._post_keyboard_transport_event, (redirect,))
+
+    def _send_handoff_intent(
+        self,
+        redirect: RedirectState,
+        path: str,
+        payload: dict[str, Any],
+    ) -> None:
+        self._outbound.send(
+            path,
+            payload,
+            lambda error: self._handoff_intent_complete(redirect, error),
+        )
+
+    def _handoff_intent_complete(
+        self,
+        redirect: RedirectState,
+        error: RuntimeError | None,
+    ) -> None:
+        with self._lock:
+            if self._redirect is not redirect:
+                return
+            if error is not None:
+                self._redirect = None
+                self._hotkey_pressed = None
+                self._last_point = redirect.restore_point
+                self._cooldown_until = (
+                    time.monotonic() + self._cooldown_ms / 1000.0
+                )
+            else:
+                redirect.ready = True
+        if error is not None:
+            Quartz.CGWarpMouseCursorPosition(_cg_point(redirect.restore_point))
+            self.log("handoff", "destination did not arm; restored the cursor")
+            return
+
+        self.log("handoff", "destination armed; starting UC transport")
+        for delay in (0.006, 0.018, 0.032, 0.048, 0.066, 0.086, 0.11, 0.138, 0.17):
+            timer = threading.Timer(delay, self._post_transport_event, (redirect,))
             timer.daemon = True
             timer.start()
 
@@ -1295,9 +1333,13 @@ class EdgeRouter:
             "UC switch was not confirmed; restored the original cursor position",
         )
 
-    def _post_keyboard_transport_event(self, redirect: RedirectState) -> None:
+    def _post_transport_event(self, redirect: RedirectState) -> None:
         with self._lock:
-            if self._redirect is not redirect or not self._armed:
+            if (
+                self._redirect is not redirect
+                or not redirect.ready
+                or not self._armed
+            ):
                 return
             display = next(
                 (
@@ -1479,6 +1521,8 @@ class EdgeRouter:
                     "UC transfer was not confirmed; restored the original cursor position",
                 )
                 return event
+            if not redirect.ready:
+                return self._hold_redirect_event(event, redirect)
             outward = outward_component(redirect.source_edge, dx, dy)
             if outward < -0.5 and not redirect.hotkey:
                 Quartz.CGEventSetLocation(event, _cg_point(redirect.restore_point))
@@ -1565,7 +1609,8 @@ class EdgeRouter:
                 self._redirect = redirect
                 self._pending_arrival = None
                 self._last_restore_point = restore_point
-            self._outbound.send(
+            self._send_handoff_intent(
+                redirect,
                 "/peer/handoff",
                 {
                     "handoff_id": redirect.handoff_id,
@@ -1577,16 +1622,19 @@ class EdgeRouter:
             )
             self.log(
                 "handoff",
-                f"{connection.name}: sending {normalized * 100:.1f}% to {peer.name}",
+                f"{connection.name}: arming {peer.name} at "
+                f"{normalized * 100:.1f}%",
             )
-            outward = outward_component(source.edge, dx, dy)
-            return self._apply_transport_event(
-                event,
-                transport,
-                transport_display,
-                normalized,
-                outward,
-            )
+            return self._hold_redirect_event(event, redirect)
+        return event
+
+    def _hold_redirect_event(self, event: Any, redirect: RedirectState) -> Any:
+        Quartz.CGEventSetLocation(event, _cg_point(redirect.restore_point))
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, 0)
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, 0)
+        with self._lock:
+            if self._redirect is redirect:
+                self._last_point = redirect.restore_point
         return event
 
     def _apply_transport_event(

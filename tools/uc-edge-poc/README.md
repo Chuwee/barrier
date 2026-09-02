@@ -96,6 +96,11 @@ acknowledges the transfer to the source agent. If Apple does not complete the
 transfer, Edge Lab restores the pre-handoff cursor position instead of leaving
 the pointer exposed on the hidden transport edge.
 
+Before touching the hidden transport edge, the source now waits for the
+destination agent to acknowledge that the matching handoff intent is armed.
+This prevents Universal Control from arriving at its physical edge before the
+destination knows where to place it.
+
 After a confirmed transfer, a 220 ms settling guard keeps any in-flight UC
 transport events on the logical destination. This prevents Apple's physical
 edge from immediately pulling the cursor back to the hidden transport edge.

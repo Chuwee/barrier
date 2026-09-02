@@ -13,6 +13,9 @@ from typing import Any, Callable
 from edge_core import Display, HostSnapshot
 
 
+OutboundCompletion = Callable[[RuntimeError | None], None]
+
+
 @dataclass(frozen=True)
 class PeerRecord:
     id: str
@@ -157,7 +160,9 @@ class OutboundWorker:
     ) -> None:
         self._peer_provider = peer_provider
         self._error_handler = error_handler
-        self._queue: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue()
+        self._queue: queue.Queue[
+            tuple[str, dict[str, Any], OutboundCompletion | None] | None
+        ] = queue.Queue()
         self._thread = threading.Thread(
             target=self._run,
             name="uc-edge-peer-outbound",
@@ -165,23 +170,43 @@ class OutboundWorker:
         )
         self._thread.start()
 
-    def send(self, path: str, payload: dict[str, Any]) -> None:
-        self._queue.put_nowait((path, payload))
+    def send(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        on_complete: OutboundCompletion | None = None,
+    ) -> None:
+        self._queue.put_nowait((path, payload, on_complete))
 
     def close(self) -> None:
         self._queue.put_nowait(None)
         self._thread.join(timeout=1.0)
+
+    def _complete(
+        self,
+        callback: OutboundCompletion | None,
+        error: RuntimeError | None,
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(error)
+        except Exception as exc:  # Keep the outbound worker alive.
+            self._error_handler(f"outbound completion failed: {exc}")
 
     def _run(self) -> None:
         while True:
             item = self._queue.get()
             if item is None:
                 return
-            path, payload = item
+            path, payload, on_complete = item
             peer = self._peer_provider()
             if peer is None:
-                self._error_handler("handoff dropped because no peer is paired")
+                error = RuntimeError("handoff dropped because no peer is paired")
+                self._error_handler(str(error))
+                self._complete(on_complete, error)
                 continue
+            error: RuntimeError | None = None
             try:
                 request_json(
                     "POST",
@@ -193,4 +218,6 @@ class OutboundWorker:
                     timeout=0.6,
                 )
             except RuntimeError as exc:
+                error = exc
                 self._error_handler(str(exc))
+            self._complete(on_complete, error)
