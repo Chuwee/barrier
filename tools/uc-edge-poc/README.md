@@ -68,7 +68,8 @@ The shortcut works in both directions and remains independent of the logical
 edge ranges. Its crosshairs in the topology show the two saved landing points.
 At least one modifier is required, and the shortcut is consumed by Edge Lab
 instead of being delivered to the foreground application. Deleting its selected
-mapping removes the shortcut; disabling that mapping also disables the shortcut.
+mapping removes the shortcut. Disabling the mapping's logical edges does not
+disable the keyboard switch because its UC transport geometry remains usable.
 
 The receiving agent confirms that Universal Control delivered input at its real
 transport edge before moving the pointer to the logical destination. It then

@@ -534,9 +534,6 @@ def validate_keyboard_switch(
     )
     if connection is None:
         raise ValueError("shortcut references a missing transport route")
-    if shortcut.enabled and not connection.enabled:
-        raise ValueError("shortcut transport route is disabled")
-
     host_displays = {
         host.id: {display.key for display in host.displays}
         for host in hosts

@@ -252,21 +252,13 @@ class TopologyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "modifier"):
             replace(self.keyboard_switch(), modifiers=()).validate()
 
-    def test_enabled_keyboard_switch_rejects_disabled_route(self) -> None:
-        with self.assertRaisesRegex(ValueError, "route is disabled"):
-            validate_keyboard_switch(
-                self.keyboard_switch(),
-                [replace(self.connection(), enabled=False)],
-                [self.host_a, self.host_b],
-            )
-
-    def test_disabled_keyboard_switch_can_keep_disabled_route(self) -> None:
+    def test_keyboard_switch_can_use_disabled_logical_route(self) -> None:
         shortcut = validate_keyboard_switch(
-            replace(self.keyboard_switch(), enabled=False),
+            self.keyboard_switch(),
             [replace(self.connection(), enabled=False)],
             [self.host_a, self.host_b],
         )
-        self.assertFalse(shortcut.enabled)
+        self.assertTrue(shortcut.enabled)
 
 
 class PeerRecordTests(unittest.TestCase):

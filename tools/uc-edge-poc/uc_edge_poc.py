@@ -569,9 +569,6 @@ class EdgeRouter:
                 if route is None:
                     self._keyboard_switch = None
                     keyboard_changed = True
-                elif not route.enabled and self._keyboard_switch.enabled:
-                    self._keyboard_switch = replace(self._keyboard_switch, enabled=False)
-                    keyboard_changed = True
             self._redirect = None
             self._arrival_placement = None
             self._arrival_latch = None
@@ -768,7 +765,8 @@ class EdgeRouter:
                 (
                     item
                     for item in self._connections
-                    if item.id == connection_id and item.enabled
+                    if item.id == connection_id
+                    and (destination is not None or item.enabled)
                 ),
                 None,
             )
@@ -950,7 +948,7 @@ class EdgeRouter:
                 (
                     item
                     for item in self._connections
-                    if item.id == shortcut.connection_id and item.enabled
+                    if item.id == shortcut.connection_id
                 ),
                 None,
             )

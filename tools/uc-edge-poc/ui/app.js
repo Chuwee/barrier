@@ -100,7 +100,7 @@ function initializeShortcutOptions(force = false) {
     $("shortcut-route"),
     state.connections.map((connection) => ({
       value: connection.id,
-      label: `${connection.name}${connection.enabled ? "" : " (disabled)"}`,
+      label: `${connection.name}${connection.enabled ? "" : " (edges off)"}`,
     })),
     "Create an edge mapping first",
     shortcut?.connection_id,
