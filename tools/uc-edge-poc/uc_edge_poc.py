@@ -200,6 +200,8 @@ class EdgeRouter:
             self._arrival_guard_ms = 1200
         if state_version < 6 and self._arrival_guard_ms == 1200:
             self._arrival_guard_ms = 220
+        if self._arrival_guard_ms == 80:
+            self._arrival_guard_ms = 220
 
         self._display_cache = list_displays()
         peer_value = persisted.get("peer")
